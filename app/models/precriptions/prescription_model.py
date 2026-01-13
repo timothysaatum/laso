@@ -9,9 +9,9 @@ from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime, date
 import uuid
 
+from app.models.core.mixins import SyncTrackingMixin, TimestampMixin
 if TYPE_CHECKING:
     from app.models.customer.customer_model import Customer
-    from app.models.core.mixins import SyncTrackingMixin, TimestampMixin
 
 
 class Prescription(Base, TimestampMixin, SyncTrackingMixin):

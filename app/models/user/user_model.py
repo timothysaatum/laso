@@ -13,10 +13,10 @@ from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime, timezone
 import uuid
 
+from app.models.core.mixins import TimestampMixin, SyncTrackingMixin, SoftDeleteMixin
 if TYPE_CHECKING:
     from app.models.pharmacy.pharmacy_mode import Organization
     from app.models.system_md.sys_models import AuditLog
-    from app.models.core.mixins import TimestampMixin, SyncTrackingMixin, SoftDeleteMixin
 
 class User(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     """

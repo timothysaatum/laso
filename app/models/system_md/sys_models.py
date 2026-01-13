@@ -11,10 +11,10 @@ from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 import uuid
 
+from app.models.core.mixins import TimestampMixin
 if TYPE_CHECKING:
     from app.models.inventory.inventory_model import Drug
     from app.models.user.user_model import User
-    from app.models.core.mixins import TimestampMixin
 
 class AuditLog(Base):
     """

@@ -12,10 +12,10 @@ from app.db.base import Base
 from typing import Optional, List, TYPE_CHECKING
 import uuid
 
+from app.models.core.mixins import SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
 if TYPE_CHECKING:
     from app.models.inventory.branch_inventory import BranchInventory, DrugBatch
     from app.models.pharmacy.pharmacy_mode import Organization
-    from app.models.core.mixins import SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
     
 
 class DrugCategory(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):

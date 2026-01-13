@@ -9,8 +9,8 @@ from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime, date
 import uuid
 
+from app.models.core.mixins import SoftDeleteMixin, SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
 if TYPE_CHECKING:
-    from app.models.core.mixins import SoftDeleteMixin, SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
     from app.models.customer.customer_model import Customer
 
 class Sale(Base, TimestampMixin, SyncTrackingMixin):

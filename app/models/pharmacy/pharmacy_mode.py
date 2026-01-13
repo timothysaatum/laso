@@ -11,8 +11,8 @@ from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 import uuid
 
+from app.models.core.mixins import SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
 if TYPE_CHECKING:
-    from app.models.core.mixins import SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
     from app.models.inventory.branch_inventory import BranchInventory
     from app.models.inventory.inventory_model import Drug
     from app.models.sales.sales_model import Sale

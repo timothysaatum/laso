@@ -12,10 +12,10 @@ from datetime import date
 import uuid
 
 
+from app.models.core.mixins import SyncTrackingMixin, TimestampMixin
 if TYPE_CHECKING:
     from app.models.pharmacy.pharmacy_mode import Branch
     from app.models.inventory.inventory_model import Drug
-    from app.models.core.mixins import SyncTrackingMixin, TimestampMixin
 
 class BranchInventory(Base, TimestampMixin, SyncTrackingMixin):
     """
