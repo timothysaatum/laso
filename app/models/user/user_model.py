@@ -1,7 +1,4 @@
 from app.db.base import Base
-from app.models.core.mixins import SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
-from app.models.pharmacy.pharmacy_mode import Organization
-from app.models.system_md.sys_models import AuditLog
 from sqlalchemy import (
     String, Integer, Boolean, DateTime, Text, 
     ForeignKey, Index, CheckConstraint, text
@@ -12,11 +9,14 @@ from sqlalchemy.orm import (
     validates
 )
 from app.models.core.mixins import pwd_context
-from typing import Optional, List
-from datetime import datetime, timezone, timezone
+from typing import Optional, List, TYPE_CHECKING
+from datetime import datetime, timezone
 import uuid
 
-
+if TYPE_CHECKING:
+    from app.models.pharmacy.pharmacy_mode import Organization
+    from app.models.system_md.sys_models import AuditLog
+    from app.models.core.mixins import TimestampMixin, SyncTrackingMixin, SoftDeleteMixin
 
 class User(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     """

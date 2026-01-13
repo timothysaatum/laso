@@ -1,9 +1,5 @@
 from app.db.base import Base
-from app.models.core.mixins import SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
-from app.models.inventory.branch_inventory import BranchInventory
-from app.models.inventory.inventory_model import Drug
-from app.models.sales.sales_model import Sale
-from app.models.user.user_model import User
+
 from sqlalchemy import (
     String, Boolean, DateTime, ForeignKey, Index, CheckConstraint, text
 )
@@ -11,11 +7,16 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import (
     Mapped, mapped_column, relationship
 )
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 import uuid
 
-
+if TYPE_CHECKING:
+    from app.models.core.mixins import SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
+    from app.models.inventory.branch_inventory import BranchInventory
+    from app.models.inventory.inventory_model import Drug
+    from app.models.sales.sales_model import Sale
+    from app.models.user.user_model import User
 
 
 class Organization(Base, TimestampMixin, SyncTrackingMixin):

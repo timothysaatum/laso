@@ -15,7 +15,11 @@ from cryptography.fernet import Fernet
 import os
 
 # Password hashing context (Argon2)
-pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+pwd_context = CryptContext(
+    schemes=["argon2", "bcrypt"],
+    deprecated="auto",
+    argon2__rounds=4
+)
 
 # Encryption for sensitive data
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", Fernet.generate_key())

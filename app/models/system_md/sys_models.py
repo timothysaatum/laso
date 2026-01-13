@@ -1,7 +1,5 @@
 from app.db.base import Base
-from app.models.core.mixins import TimestampMixin
-from app.models.inventory.inventory_model import Drug
-from app.models.user.user_model import User
+
 from sqlalchemy.sql import func
 from sqlalchemy import (
     String, Integer, Boolean, DateTime, Text,
@@ -9,11 +7,14 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID, ARRAY, INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 import uuid
 
-
+if TYPE_CHECKING:
+    from app.models.inventory.inventory_model import Drug
+    from app.models.user.user_model import User
+    from app.models.core.mixins import TimestampMixin
 
 class AuditLog(Base):
     """

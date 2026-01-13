@@ -1,16 +1,17 @@
 from app.db.base import Base
-from app.models.core.mixins import SyncTrackingMixin, TimestampMixin
-from app.models.customer.customer_model import Customer
 from sqlalchemy import (
     String, Integer, DateTime, Text,
     ForeignKey, Index, CheckConstraint, Date
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime, date
 import uuid
 
+if TYPE_CHECKING:
+    from app.models.customer.customer_model import Customer
+    from app.models.core.mixins import SyncTrackingMixin, TimestampMixin
 
 
 class Prescription(Base, TimestampMixin, SyncTrackingMixin):

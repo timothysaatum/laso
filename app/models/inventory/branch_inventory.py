@@ -1,7 +1,4 @@
 from app.db.base import Base
-from app.models.core.mixins import SyncTrackingMixin, TimestampMixin
-from app.models.inventory.inventory_model import Drug
-from app.models.pharmacy.pharmacy_mode import Branch
 from sqlalchemy import (
     String, Integer, Numeric, Text, 
     ForeignKey, Index, CheckConstraint, UniqueConstraint, Date, text
@@ -10,9 +7,15 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import (
     Mapped, mapped_column, relationship
 )
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from datetime import date
 import uuid
+
+
+if TYPE_CHECKING:
+    from app.models.pharmacy.pharmacy_mode import Branch
+    from app.models.inventory.inventory_model import Drug
+    from app.models.core.mixins import SyncTrackingMixin, TimestampMixin
 
 class BranchInventory(Base, TimestampMixin, SyncTrackingMixin):
     """

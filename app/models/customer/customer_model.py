@@ -1,16 +1,17 @@
 from app.db.base import Base
-from app.models.core.mixins import SoftDeleteMixin, SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
-from app.models.precriptions.prescription_model import Prescription
-from app.models.sales.sales_model import Sale
 from sqlalchemy import (
     String, Integer, Boolean, ForeignKey, Index, CheckConstraint, Date, text
 )
 from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from datetime import date
 import uuid
 
+if TYPE_CHECKING:
+    from app.models.core.mixins import SoftDeleteMixin, SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
+    from app.models.precriptions.prescription_model import Prescription
+    from app.models.sales.sales_model import Sale
 
 class Customer(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     """

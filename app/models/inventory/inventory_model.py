@@ -1,7 +1,4 @@
-from unittest.mock import Base
-from app.models.core.mixins import SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
-from app.models.inventory.branch_inventory import BranchInventory, DrugBatch
-from app.models.pharmacy.pharmacy_mode import Organization
+
 from sqlalchemy import (
     String, Integer, Boolean, Numeric, Text, 
     ForeignKey, Index, CheckConstraint, event
@@ -11,9 +8,15 @@ from sqlalchemy.orm import (
     Mapped, mapped_column, relationship,
     validates
 )
-from typing import Optional, List
+from app.db.base import Base
+from typing import Optional, List, TYPE_CHECKING
 import uuid
 
+if TYPE_CHECKING:
+    from app.models.inventory.branch_inventory import BranchInventory, DrugBatch
+    from app.models.pharmacy.pharmacy_mode import Organization
+    from app.models.core.mixins import SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
+    
 
 class DrugCategory(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     """Hierarchical drug categories"""
