@@ -15,7 +15,7 @@ import uuid
 from app.models.core.mixins import SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
 if TYPE_CHECKING:
     from app.models.inventory.branch_inventory import BranchInventory, DrugBatch
-    from app.models.pharmacy.pharmacy_mode import Organization
+    from app.models.pharmacy.pharmacy_model import Organization
     
 
 class DrugCategory(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):

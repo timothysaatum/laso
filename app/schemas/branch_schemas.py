@@ -1,13 +1,12 @@
 from app.schemas.base_schemas import BaseSchema, SyncSchema, TimestampSchema
 from pydantic import (
-    BaseModel, EmailStr, Field, field_validator, 
+    EmailStr, Field, field_validator, 
     model_validator, ConfigDict, computed_field
 )
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
 from decimal import Decimal
 import uuid
-import re
 
 
 

@@ -41,7 +41,7 @@ class Organization(Base, TimestampMixin, SyncTrackingMixin):
     type: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
-        comment="small_shop, pharmacy, hospital_pharmacy, chain"
+        comment="over_the_counter, pharmacy, hospital_pharmacy, chain"
     )
     
     license_number: Mapped[Optional[str]] = mapped_column(

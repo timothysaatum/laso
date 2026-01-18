@@ -15,7 +15,7 @@ import uuid
 
 from app.models.core.mixins import TimestampMixin, SyncTrackingMixin, SoftDeleteMixin
 if TYPE_CHECKING:
-    from app.models.pharmacy.pharmacy_mode import Organization
+    from app.models.pharmacy.pharmacy_model import Organization
     from app.models.system_md.sys_models import AuditLog
 
 class User(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):

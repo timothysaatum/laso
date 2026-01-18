@@ -6,7 +6,7 @@ from app.models.core.mixins import (
 )
 
 # 2. Organization (root entity)
-from app.models.pharmacy.pharmacy_mode import Organization, Branch
+from app.models.pharmacy.pharmacy_model import Organization, Branch
 
 # 3. Users
 from app.models.user.user_model import User, UserSession

@@ -14,7 +14,7 @@ import uuid
 
 from app.models.core.mixins import SyncTrackingMixin, TimestampMixin
 if TYPE_CHECKING:
-    from app.models.pharmacy.pharmacy_mode import Branch
+    from app.models.pharmacy.pharmacy_model import Branch
     from app.models.inventory.inventory_model import Drug
 
 class BranchInventory(Base, TimestampMixin, SyncTrackingMixin):
@@ -156,8 +156,7 @@ class DrugBatch(Base, TimestampMixin, SyncTrackingMixin):
     drug: Mapped["Drug"] = relationship(back_populates="batches")
     
     __table_args__ = (
-        UniqueConstraint('branch_id', 'drug_id', 'batch_number', 
-                        name='uq_branch_drug_batch'),
+        UniqueConstraint('branch_id', 'drug_id', 'batch_number', name='uq_branch_drug_batch'),
         CheckConstraint("remaining_quantity >= 0", name='check_batch_remaining'),
         CheckConstraint("remaining_quantity <= quantity", name='check_batch_remaining_lte_total'),
         Index('idx_batch_branch', 'branch_id'),

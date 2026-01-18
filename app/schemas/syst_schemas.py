@@ -1,5 +1,5 @@
 from app.schemas.base_schemas import BaseSchema, SyncSchema, TimestampSchema
-from app.schemas.branch_scgemas import BranchInventoryResponse, DrugCategoryResponse, DrugResponse
+from app.schemas.branch_schemas import BranchInventoryResponse, DrugCategoryResponse, DrugResponse
 from pydantic import (
     EmailStr, Field, field_validator, 
     model_validator, computed_field
