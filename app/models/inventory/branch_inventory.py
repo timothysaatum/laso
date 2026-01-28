@@ -3,7 +3,7 @@ from sqlalchemy import (
     String, Integer, Numeric, Text, 
     ForeignKey, Index, CheckConstraint, UniqueConstraint, Date, text
 )
-from sqlalchemy.dialects.postgresql import UUID
+from app.models.db_types import UUID
 from sqlalchemy.orm import (
     Mapped, mapped_column, relationship
 )
@@ -151,7 +151,7 @@ class DrugBatch(Base, TimestampMixin, SyncTrackingMixin):
         ForeignKey('purchase_orders.id', ondelete='SET NULL'),
         nullable=True
     )
-    
+
     # Relationships
     drug: Mapped["Drug"] = relationship(back_populates="batches")
     
@@ -163,9 +163,8 @@ class DrugBatch(Base, TimestampMixin, SyncTrackingMixin):
         Index('idx_batch_drug', 'drug_id'),
         Index('idx_batch_expiry', 'expiry_date'),
         Index('idx_batch_remaining', 'remaining_quantity'),
-        # Find expiring batches with stock
         Index('idx_batch_expiring_stock', 'expiry_date', 'remaining_quantity',
-              postgresql_where=text('remaining_quantity > 0')),
+        postgresql_where=text('remaining_quantity > 0')),
     )
 
 

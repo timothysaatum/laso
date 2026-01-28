@@ -3,7 +3,7 @@ from sqlalchemy import (
     String, Integer, Boolean, Numeric, Text, 
     ForeignKey, Index, CheckConstraint, event
 )
-from sqlalchemy.dialects.postgresql import UUID
+from app.models.db_types import UUID
 from sqlalchemy.orm import (
     Mapped, mapped_column, relationship,
     validates

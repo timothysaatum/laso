@@ -3,7 +3,7 @@ from app.db.base import Base
 from sqlalchemy import (
     String, Boolean, DateTime, ForeignKey, Index, CheckConstraint, text
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from app.models.db_types import UUID, JSONB
 from sqlalchemy.orm import (
     Mapped, mapped_column, relationship
 )
@@ -30,7 +30,7 @@ class Organization(Base, TimestampMixin, SyncTrackingMixin):
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4
-    )
+    )                                                                                               
     
     name: Mapped[str] = mapped_column(
         String(255),
@@ -69,7 +69,6 @@ class Organization(Base, TimestampMixin, SyncTrackingMixin):
     settings: Mapped[dict] = mapped_column(
         JSONB,
         default=dict,
-        server_default=text("'{}'::jsonb"),
         comment="Tax rates, business hours, preferences, etc."
     )
     

@@ -2,7 +2,7 @@ from app.db.base import Base
 from sqlalchemy import (
     String, Integer, Boolean, ForeignKey, Index, CheckConstraint, Date, text
 )
-from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
+from app.models.db_types import UUID, ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional, List, TYPE_CHECKING
 from datetime import date
@@ -73,14 +73,12 @@ class Customer(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     allergies: Mapped[List[str]] = mapped_column(
         ARRAY(String),
         default=list,
-        server_default=text("'{}'::text[]"),
         comment="Known drug allergies"
     )
     
     chronic_conditions: Mapped[List[str]] = mapped_column(
         ARRAY(String),
         default=list,
-        server_default=text("'{}'::text[]"),
         comment="Chronic medical conditions"
     )
     

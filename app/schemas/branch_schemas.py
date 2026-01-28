@@ -1,4 +1,4 @@
-from app.schemas.base_schemas import BaseSchema, SyncSchema, TimestampSchema
+from app.schemas.base_schemas import BaseSchema, Money, SyncSchema, TimestampSchema
 from pydantic import (
     EmailStr, Field, field_validator, 
     model_validator, ConfigDict, computed_field
@@ -13,8 +13,8 @@ import uuid
 
 class BranchBase(BaseSchema):
     name: str = Field(..., min_length=2, max_length=255)
-    code: str = Field(
-        ..., 
+    code: Optional[str] = Field(
+        None, 
         min_length=2, 
         max_length=50,
         pattern="^[A-Z0-9_-]+$",
@@ -30,7 +30,7 @@ class BranchBase(BaseSchema):
 
 
 class BranchCreate(BranchBase):
-    organization_id: uuid.UUID
+    organization_id: Optional[uuid.UUID] = None
     manager_id: Optional[uuid.UUID] = None
 
 
@@ -116,29 +116,23 @@ class DrugBase(BaseSchema):
         pattern="^(I|II|III|IV|V)$",
         description="DEA Schedule I-V"
     )
-    unit_price: Decimal = Field(
-        ..., 
-        ge=0, 
-        decimal_places=2,
+    unit_price: Money = Field(
+        ...,
         description="Selling price per unit"
     )
-    cost_price: Optional[Decimal] = Field(
-        None, 
-        ge=0, 
-        decimal_places=2,
+    cost_price: Optional[Money] = Field(
+        None,
         description="Cost/acquisition price"
     )
     markup_percentage: Optional[Decimal] = Field(
         None,
         ge=0,
-        le=1000,
-        decimal_places=2
+        le=1000
     )
     tax_rate: Decimal = Field(
         default=Decimal("0"),
         ge=0,
         le=100,
-        decimal_places=2,
         description="Tax rate as percentage"
     )
     reorder_level: int = Field(default=10, ge=0, description="Reorder trigger threshold")
@@ -209,9 +203,9 @@ class DrugUpdate(BaseSchema):
     generic_name: Optional[str] = None
     brand_name: Optional[str] = None
     category_id: Optional[uuid.UUID] = None
-    unit_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
-    cost_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
-    tax_rate: Optional[Decimal] = Field(None, ge=0, le=100, decimal_places=2)
+    unit_price: Optional[Money] = Field(None, description="unit price of product")
+    cost_price: Optional[Money] = Field(None, description="cost price of product")
+    tax_rate: Optional[Decimal] = Field(None, ge=0, le=100)
     reorder_level: Optional[int] = Field(None, ge=0)
     reorder_quantity: Optional[int] = Field(None, ge=1)
     description: Optional[str] = None
@@ -301,8 +295,8 @@ class DrugBatchBase(BaseSchema):
     remaining_quantity: int = Field(..., ge=0)
     manufacturing_date: Optional[date] = None
     expiry_date: date = Field(..., description="Critical for safety")
-    cost_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
-    selling_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
+    cost_price: Optional[Decimal] = Field(None, ge=0)
+    selling_price: Optional[Decimal] = Field(None, ge=0)
     supplier: Optional[str] = Field(None, max_length=255)
 
     @model_validator(mode='after')
@@ -507,10 +501,10 @@ class PrescriptionResponse(PrescriptionBase, TimestampSchema, SyncSchema):
 class SaleItemBase(BaseSchema):
     drug_id: uuid.UUID
     quantity: int = Field(..., gt=0)
-    unit_price: Decimal = Field(..., ge=0, decimal_places=2)
-    discount_percentage: Decimal = Field(default=Decimal("0"), ge=0, le=100, decimal_places=2)
-    discount_amount: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
-    tax_rate: Decimal = Field(default=Decimal("0"), ge=0, le=100, decimal_places=2)
+    unit_price: Decimal = Field(..., ge=0)
+    discount_percentage: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+    discount_amount: Decimal = Field(default=Decimal("0"), ge=0)
+    tax_rate: Decimal = Field(default=Decimal("0"), ge=0, le=100)
     requires_prescription: bool = False
     prescription_verified: bool = False
 
@@ -673,7 +667,7 @@ class SupplierBase(BaseSchema):
         max_length=100,
         description="NET30, NET60, COD, etc."
     )
-    credit_limit: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
+    credit_limit: Optional[Decimal] = Field(None, ge=0)
 
 
 class SupplierCreate(SupplierBase):
@@ -694,7 +688,7 @@ class SupplierUpdate(BaseSchema):
 class SupplierResponse(SupplierBase, TimestampSchema, SyncSchema):
     id: uuid.UUID
     organization_id: uuid.UUID
-    rating: Optional[Decimal] = Field(None, ge=0, le=5, decimal_places=2)
+    rating: Optional[Decimal] = Field(None, ge=0, le=5)
     total_orders: int
     total_value: Decimal
     is_active: bool
@@ -708,7 +702,7 @@ class SupplierResponse(SupplierBase, TimestampSchema, SyncSchema):
 class PurchaseOrderItemBase(BaseSchema):
     drug_id: uuid.UUID
     quantity_ordered: int = Field(..., gt=0)
-    unit_cost: Decimal = Field(..., ge=0, decimal_places=2)
+    unit_cost: Decimal = Field(..., ge=0)
 
     @computed_field
     @property
@@ -1053,46 +1047,3 @@ class ExpiringBatch(BaseSchema):
     expiry_date: date
     days_until_expiry: int = Field(..., ge=0)
     branch_id: uuid.UUID
-
-
-# ============================================
-# Error Response Schemas
-# ============================================
-
-class ErrorDetail(BaseSchema):
-    """Detailed error information"""
-    field: Optional[str] = None
-    message: str
-    type: str
-    context: Optional[Dict[str, Any]] = None
-
-
-class ErrorResponse(BaseSchema):
-    """Standard error response"""
-    error: str = Field(..., description="Error type/code")
-    message: str = Field(..., description="Human-readable error message")
-    details: Optional[List[ErrorDetail]] = Field(
-        None,
-        description="Detailed error information"
-    )
-    timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
-    request_id: Optional[str] = Field(
-        None,
-        description="Request ID for tracking"
-    )
-
-
-# ============================================
-# Health Check Schema
-# ============================================
-
-class HealthCheckResponse(BaseSchema):
-    """System health check"""
-    status: str = Field(..., pattern="^(healthy|degraded|unhealthy)$")
-    version: str
-    database: str = Field(..., pattern="^(connected|disconnected)$")
-    cache: Optional[str] = Field(None, pattern="^(connected|disconnected)$")
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    checks: Dict[str, bool] = Field(default_factory=dict)

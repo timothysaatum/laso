@@ -3,7 +3,7 @@ from sqlalchemy import (
     String, Integer, Boolean, DateTime, Numeric, Text,
     ForeignKey, Index, CheckConstraint, Date
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from app.models.db_types import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime, date
@@ -12,6 +12,7 @@ import uuid
 from app.models.core.mixins import SoftDeleteMixin, SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
 if TYPE_CHECKING:
     from app.models.customer.customer_model import Customer
+    from app.models.pharmacy.pharmacy_model import Branch 
 
 class Sale(Base, TimestampMixin, SyncTrackingMixin):
     """
@@ -186,6 +187,7 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
     )
     
     # Relationships
+    branch: Mapped["Branch"] = relationship(back_populates="sales")
     customer: Mapped[Optional["Customer"]] = relationship(back_populates="sales")
     items: Mapped[List["SaleItem"]] = relationship(
         back_populates="sale",
@@ -252,36 +254,42 @@ class SaleItem(Base, TimestampMixin):
         index=True
     )
     
-    batch_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey('drug_batches.id', ondelete='SET NULL'),
-        nullable=True,
-        comment="Batch from which item was sold (FIFO)"
-    )
-    
-    # Denormalized drug information (snapshot at time of sale)
+    # Denormalized drug info (for historical accuracy)
     drug_name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
         comment="Drug name at time of sale"
     )
     
-    drug_sku: Mapped[Optional[str]] = mapped_column(String(100))
+    batch_number: Mapped[Optional[str]] = mapped_column(String(100))
     
-    # Quantity and pricing
+    # Quantity
     quantity: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         comment="Number of units sold"
     )
     
+    unit_of_measure: Mapped[str] = mapped_column(
+        String(50),
+        default='unit',
+        nullable=False
+    )
+    
+    # Pricing
     unit_price: Mapped[float] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         comment="Price per unit at time of sale"
     )
     
-    # Item-level discount
+    subtotal: Mapped[float] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        comment="quantity * unit_price"
+    )
+    
+    # Discount
     discount_percentage: Mapped[float] = mapped_column(
         Numeric(5, 2),
         default=0,
@@ -338,8 +346,6 @@ class SaleItem(Base, TimestampMixin):
         Index('idx_sale_item_drug', 'drug_id'),
         Index('idx_sale_item_date', 'created_at'),
     )
-
-
 
 
 class Supplier(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):

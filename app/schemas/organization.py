@@ -13,7 +13,7 @@ class OrganizationBase(BaseSchema):
     name: str = Field(..., min_length=2, max_length=255, description="Organization name")
     type: str = Field(
         ..., 
-        pattern="^(small_shop|pharmacy|hospital_pharmacy|chain)$",
+        pattern="^(otc|pharmacy|hospital_pharmacy|chain)$",
         description="Organization type"
     )
     license_number: Optional[str] = Field(None, max_length=100)
@@ -72,7 +72,7 @@ class OrganizationCreate(OrganizationBase):
 
 class OrganizationUpdate(BaseSchema):
     name: Optional[str] = Field(None, min_length=2, max_length=255)
-    type: Optional[str] = Field(None, pattern="^(small_shop|pharmacy|hospital_pharmacy|chain)$")
+    type: Optional[str] = Field(None, pattern="^(otc|pharmacy|hospital_pharmacy|chain)$")
     phone: Optional[str] = None
     email: Optional[EmailStr] = None
     address: Optional[Dict[str, Any]] = None

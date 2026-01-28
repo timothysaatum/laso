@@ -19,13 +19,13 @@ class UserBase(BaseSchema):
     )
     email: EmailStr
     full_name: str = Field(..., min_length=2, max_length=255)
-    role: str = Field(
-        ...,
+    role: Optional[str] = Field(
+        None,
         pattern="^(super_admin|admin|manager|pharmacist|cashier|viewer)$"
     )
     phone: Optional[str] = Field(None, max_length=20)
     employee_id: Optional[str] = Field(None, max_length=50)
-    assigned_branches: List[uuid.UUID] = Field(
+    assigned_branches: Optional[List[uuid.UUID]] = Field(
         default_factory=list,
         description="Branch IDs this user can access"
     )
@@ -38,7 +38,7 @@ class UserCreate(UserBase):
         max_length=100,
         description="Password must be at least 8 characters"
     )
-    organization_id: uuid.UUID
+    organization_id: Optional[uuid.UUID]= None
 
     @field_validator('password')
     @classmethod

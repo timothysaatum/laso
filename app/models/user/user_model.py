@@ -3,7 +3,7 @@ from sqlalchemy import (
     String, Integer, Boolean, DateTime, Text, 
     ForeignKey, Index, CheckConstraint, text
 )
-from sqlalchemy.dialects.postgresql import UUID, ARRAY, INET, JSONB
+from app.models.db_types import UUID, ARRAY, INET, JSONB
 from sqlalchemy.orm import (
     Mapped, mapped_column, relationship,
     validates
@@ -71,7 +71,6 @@ class User(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     assigned_branches: Mapped[List[uuid.UUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)),
         default=list,
-        server_default=text("'{}'::uuid[]"),
         comment="Branches this user can access"
     )
     
@@ -79,7 +78,6 @@ class User(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     permissions: Mapped[dict] = mapped_column(
         JSONB,
         default=dict,
-        server_default=text("'{}'::jsonb"),
         comment="{ additional: ['perm1', 'perm2'], denied: ['perm3'] }"
     )
     

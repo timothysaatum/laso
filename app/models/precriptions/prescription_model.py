@@ -3,7 +3,7 @@ from sqlalchemy import (
     String, Integer, DateTime, Text,
     ForeignKey, Index, CheckConstraint, Date
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from app.models.db_types import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime, date

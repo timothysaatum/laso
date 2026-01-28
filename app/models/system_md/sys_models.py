@@ -5,7 +5,7 @@ from sqlalchemy import (
     String, Integer, Boolean, DateTime, Text,
     ForeignKey, Index, CheckConstraint, BigInteger, event, text
 )
-from sqlalchemy.dialects.postgresql import UUID, ARRAY, INET, JSONB
+from app.models.db_types import UUID, ARRAY, INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
@@ -73,7 +73,7 @@ class AuditLog(Base):
     user_agent: Mapped[Optional[str]] = mapped_column(Text)
     
     # Additional context
-    metadata: Mapped[Optional[dict]] = mapped_column(
+    context_metadata: Mapped[Optional[dict]] = mapped_column(
         JSONB,
         comment="Additional context about the action"
     )
@@ -167,7 +167,6 @@ class SystemAlert(Base, TimestampMixin):
     notifications_sent: Mapped[List[str]] = mapped_column(
         ARRAY(String),
         default=list,
-        server_default=text("'{}'::text[]"),
         comment="List of notification channels used: email, sms, push"
     )
     
@@ -285,14 +284,3 @@ class SyncQueue(Base):
         Index('idx_sync_queue_pending', 'status', 'scheduled_at',
               postgresql_where=text("status = 'pending'")),
     )
-
-
-# Database event listeners for automatic auditing
-@event.listens_for(Drug, 'after_insert')
-@event.listens_for(Drug, 'after_update')
-@event.listens_for(Drug, 'after_delete')
-def audit_drug_changes(mapper, connection, target):
-    """Automatically create audit log for drug changes"""
-    # This would create an AuditLog entry
-    # Implementation depends on current context (user, session, etc.)
-    pass

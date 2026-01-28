@@ -32,6 +32,23 @@ class Settings(BaseSettings):
     SUPER_ADMIN_USER_NAME: str
     SUPER_ADMIN_PASSWORD_HASH: str
     SUPER_ADMIN_TOKEN_EXPIRE_MINUTES: int = 60
+    
+    # Password Security
+    MIN_PASSWORD_LENGTH: int = 8
+    ACCOUNT_LOCKOUT_DURATION_MINUTES: int = 30
+    
+    # Rate Limiting
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_REQUESTS: int = 100
+    RATE_LIMIT_WINDOW_SECONDS: int = 60
+    
+    # Session Management
+    MAX_SESSIONS_PER_USER: int = 5
+    SESSION_CLEANUP_HOURS: int = 24
+    
+    # Audit Log
+    AUDIT_LOG_ENABLED: bool = True
+    AUDIT_LOG_RETENTION_DAYS: int = 90
 
     # -------------------------
     # Database
@@ -66,9 +83,9 @@ class Settings(BaseSettings):
     # -------------------------
     # Africa's Talking (SMS)
     # -------------------------
-    AFRICAISTALKING: Optional[str] = None
-    AFRICAISTALKING_AUTH_TOKEN: Optional[str] = None
-    AFRICAISTALKING_PHONE_NUMBER: Optional[str] = None
+    ARKESEL: Optional[str] = None
+    ARKESEL_AUTH_TOKEN: Optional[str] = None
+    ARKESEL_PHONE_NUMBER: Optional[str] = None
 
     # -------------------------
     # Model config
@@ -109,6 +126,21 @@ class Settings(BaseSettings):
         if v:
             return v
         return info.data.get("DATABASE_URL")
+    
+    @property
+    def is_production(self) -> bool:
+        """Check if running in production"""
+        return self.ENVIRONMENT.lower() == "production"
+    
+    @property
+    def access_token_expire_seconds(self) -> int:
+        """Get access token expiry in seconds"""
+        return self.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    
+    @property
+    def refresh_token_expire_seconds(self) -> int:
+        """Get refresh token expiry in seconds"""
+        return self.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
 
 
 @lru_cache

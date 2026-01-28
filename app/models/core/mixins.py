@@ -2,23 +2,25 @@
 from sqlalchemy import (
     String, Boolean, DateTime, ForeignKey, BigInteger
 )
-from sqlalchemy.dialects.postgresql import UUID
+from app.models.db_types import UUID
 from sqlalchemy.orm import (
     Mapped, mapped_column, declarative_mixin
 )
 from sqlalchemy.sql import func
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 from passlib.context import CryptContext
 from cryptography.fernet import Fernet
 import os
 
-# Password hashing context (Argon2)
+# Password hashing context
 pwd_context = CryptContext(
-    schemes=["argon2", "bcrypt"],
+    schemes=["argon2"],
     deprecated="auto",
-    argon2__rounds=4
+    argon2__memory_cost=65536,
+    argon2__time_cost=3,
+    argon2__parallelism=4
 )
 
 # Encryption for sensitive data
@@ -76,6 +78,20 @@ class SyncTrackingMixin:
         nullable=True,
         comment="SHA256 hash for detecting changes"
     )
+    
+    def mark_as_pending_sync(self):
+        """Mark record as pending sync"""
+        self.sync_status = 'pending'
+        self.sync_version += 1
+    
+    def mark_as_synced(self):
+        """Mark record as successfully synced"""
+        self.sync_status = 'synced'
+        self.last_synced_at = datetime.now(timezone.utc)
+    
+    def mark_as_conflict(self):
+        """Mark record as having sync conflict"""
+        self.sync_status = 'conflict'
 
 
 @declarative_mixin
