@@ -12,7 +12,6 @@ from app.core.config import get_settings
 from app.db.session import engine
 from app.api.v1 import router as v1_router
 from app.middleware.rate_limit import RateLimitMiddleware
-# from app.api.v1.endpoints import auth
 
 
 # ============================================================================
@@ -89,15 +88,6 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """
     Manage application lifecycle - startup and shutdown events.
-    
-    Startup:
-    - Initialize database connection
-    - Verify database health
-    - Log startup information
-    
-    Shutdown:
-    - Close database connections
-    - Clean up resources
     """
     # Startup
     logger.info(f"Starting {settings.PROJECT_NAME} v{settings.VERSION}")
@@ -108,7 +98,7 @@ async def lifespan(app: FastAPI):
     try:
         from app.db.base import Base
         
-        # Test database connectivity and create tables in same connection
+        # Database setup
         async with engine.begin() as conn:
             await conn.execute(text("SELECT 1"))
             logger.info("Database connection established")
@@ -118,6 +108,42 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Database connection failed: {str(e)}")
         raise
+    
+    try:
+        from app.utils.notifications import setup_notifications, EmailConfig, ArkeselConfig
+        
+        # Email config (optional)
+        email_config = None
+        if settings.SMTP_HOST and settings.SMTP_USER:
+            email_config = EmailConfig(
+                smtp_host=settings.SMTP_HOST,
+                smtp_port=settings.SMTP_PORT,
+                smtp_user=settings.SMTP_USER,
+                smtp_password=settings.SMTP_PASSWORD,
+                from_email=settings.FROM_EMAIL,
+                from_name=settings.PROJECT_NAME
+            )
+            logger.info("Email notifications configured")
+        
+        # Arkesel SMS config
+        arkesel_config = None
+        if settings.ARKESEL_API_KEY:
+            arkesel_config = ArkeselConfig(
+                api_key=settings.ARKESEL_API_KEY,
+                sender_id=settings.ARKESEL_SENDER_ID,
+                base_url=settings.ARKESEL_BASE_URL
+            )
+            logger.info("Arkesel SMS configured")
+        
+        # Initialize
+        setup_notifications(
+            email_config=email_config,
+            arkesel_config=arkesel_config
+        )
+        logger.info("Notification system initialized")
+        
+    except Exception as e:
+        logger.warning(f"Notification setup failed (non-critical): {str(e)}")
     
     yield
     
@@ -362,7 +388,7 @@ if __name__ == "__main__":
     
     # Determine host and port
     host = "0.0.0.0" if settings.ENVIRONMENT == "production" else "127.0.0.1"
-    port = 8000
+    port = 9000
     
     # Determine reload behavior
     reload = settings.ENVIRONMENT != "production"

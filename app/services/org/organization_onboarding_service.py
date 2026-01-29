@@ -496,7 +496,7 @@ class OrganizationOnboardingService:
         
         # Extend subscription
         if organization.subscription_expires_at:
-            if organization.subscription_expires_at > datetime.now(timezone.utc):
+            if organization.subscription_expires_at.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
                 # Extend from current expiry
                 organization.subscription_expires_at += timedelta(days=extend_months * 30)
             else:

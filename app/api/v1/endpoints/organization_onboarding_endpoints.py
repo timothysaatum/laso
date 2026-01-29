@@ -27,6 +27,7 @@ from app.schemas.organization_onboarding_schemas import (
     OrganizationSettingsUpdate
 )
 from app.schemas.organization import OrganizationResponse, OrganizationUpdate
+from app.utils.pagination import PaginatedResponse, Paginator, PaginationParams
 
 
 router = APIRouter(prefix="/organizations", tags=["Organization Onboarding"])
@@ -130,14 +131,13 @@ async def onboard_organization(
 
 @router.get(
     "",
-    response_model=OrganizationListResponse,
+    response_model=PaginatedResponse[OrganizationResponse],
     summary="List all organizations",
     description="Get paginated list of all organizations. **Requires super_admin role**",
     dependencies=[Depends(require_role("super_admin"))]
 )
 async def list_organizations(
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    pagination: PaginationParams = Depends(),
     search: Optional[str] = Query(None, description="Search by name"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     subscription_tier: Optional[str] = Query(
@@ -152,7 +152,7 @@ async def list_organizations(
     List all organizations with pagination and filtering
     
     - **page**: Page number (default: 1)
-    - **page_size**: Items per page (default: 50, max: 100)
+    - **page_size**: Items per page (default: 50, max: 500)
     - **search**: Search organizations by name
     - **is_active**: Filter by active status
     - **subscription_tier**: Filter by subscription tier
@@ -162,48 +162,25 @@ async def list_organizations(
     
     # Apply filters
     filters = []
-    
     if search:
         filters.append(Organization.name.ilike(f"%{search}%"))
-    
     if is_active is not None:
         filters.append(Organization.is_active == is_active)
-    
     if subscription_tier:
         filters.append(Organization.subscription_tier == subscription_tier)
     
     if filters:
         query = query.where(and_(*filters))
     
-    # Get total count
-    count_query = select(func.count()).select_from(Organization)
-    if filters:
-        count_query = count_query.where(and_(*filters))
-    
-    result = await db.execute(count_query)
-    total = result.scalar()
-    
-    # Apply pagination
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    # Add ordering
     query = query.order_by(desc(Organization.created_at))
     
-    # Execute query
-    result = await db.execute(query)
-    organizations = result.scalars().all()
-    
-    # Calculate pagination metadata
-    total_pages = (total + page_size - 1) // page_size
-    has_next = page < total_pages
-    has_prev = page > 1
-    
-    return OrganizationListResponse(
-        items=organizations,
-        total=total,
-        page=page,
-        page_size=page_size,
-        total_pages=total_pages,
-        has_next=has_next,
-        has_prev=has_prev
+    # Paginate
+    paginator = Paginator(db)
+    return await paginator.paginate(
+        query=query,
+        params=pagination,
+        schema=OrganizationResponse
     )
 
 
@@ -483,11 +460,11 @@ async def get_organization_stats(
     days_until_expiry = None
     
     if organization.subscription_expires_at:
-        if organization.subscription_expires_at < datetime.now(timezone.utc):
+        if organization.subscription_expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
             subscription_status = "expired"
             days_until_expiry = 0
         else:
-            delta = organization.subscription_expires_at - datetime.now(timezone.utc)
+            delta = organization.subscription_expires_at.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)
             days_until_expiry = delta.days
             
             if days_until_expiry <= 7:

@@ -1,7 +1,7 @@
 from app.db.base import Base
 
 from sqlalchemy import (
-    String, Boolean, DateTime, ForeignKey, Index, CheckConstraint, text
+    String, Boolean, DateTime, ForeignKey, Index, CheckConstraint
 )
 from app.models.db_types import UUID, JSONB
 from sqlalchemy.orm import (
@@ -107,7 +107,7 @@ class Organization(Base, TimestampMixin, SyncTrackingMixin):
     
     __table_args__ = (
         CheckConstraint(
-            "type IN ('small_shop', 'pharmacy', 'hospital_pharmacy', 'chain')",
+            "type IN ('otc', 'pharmacy', 'hospital_pharmacy', 'chain')",
             name='check_org_type'
         ),
         CheckConstraint(

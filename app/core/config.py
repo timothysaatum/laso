@@ -83,10 +83,10 @@ class Settings(BaseSettings):
     # -------------------------
     # Africa's Talking (SMS)
     # -------------------------
-    ARKESEL: Optional[str] = None
-    ARKESEL_AUTH_TOKEN: Optional[str] = None
-    ARKESEL_PHONE_NUMBER: Optional[str] = None
-
+    ARKESEL_API_KEY: Optional[str] = None
+    ARKESEL_BASE_URL: Optional[str] = None
+    ARKESEL_CONTACTS_URL: Optional[str] = None
+    ARKESEL_SENDER_ID: Optional[str] = None
     # -------------------------
     # Model config
     # -------------------------

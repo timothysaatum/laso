@@ -38,6 +38,11 @@ class SyncSchema(BaseSchema):
     synced_at: Optional[datetime] = None
     
 
+class ResponseMetadata(BaseSchema):
+    """Metadata for API responses"""
+    success: bool = True
+    message: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 # ============================================
 # Error Response Schemas

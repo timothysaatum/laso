@@ -82,7 +82,6 @@ class UserCreate(UserBase):
         }
     )
 
-
 class UserUpdate(BaseSchema):
     full_name: Optional[str] = Field(None, min_length=2, max_length=255)
     phone: Optional[str] = None
