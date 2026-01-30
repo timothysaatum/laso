@@ -1,79 +1,62 @@
-from app.schemas.base_schemas import BaseSchema, SyncSchema, TimestampSchema
-from pydantic import (
-    EmailStr, Field, field_validator, 
-    model_validator, ConfigDict, computed_field
-)
-from typing import Optional, List, Dict, Any
-from datetime import datetime, date
+"""
+Drug Schemas
+Complete schemas for drug/product management
+"""
+from pydantic import Field, field_validator, computed_field, ConfigDict, model_validator, EmailStr
+from typing import Any, Dict, Optional, List
+from datetime import date, datetime
 from decimal import Decimal
 import uuid
+import re
 
+from app.schemas.base_schemas import (
+    BaseSchema, Money, TimestampSchema, SyncSchema
+)
 
 
 class DrugBase(BaseSchema):
-    name: str = Field(..., min_length=2, max_length=255, description="Brand or trade name")
-    generic_name: Optional[str] = Field(None, max_length=255)
+    """Base drug fields"""
+    name: str = Field(..., min_length=1, max_length=255, description="Brand or trade name")
+    generic_name: Optional[str] = Field(None, max_length=255, description="Generic/scientific name")
     brand_name: Optional[str] = Field(None, max_length=255)
-    sku: Optional[str] = Field(
-        None, 
-        max_length=100,
-        pattern="^[A-Z0-9_-]+$",
-        description="Stock Keeping Unit"
-    )
-    barcode: Optional[str] = Field(
-        None, 
-        max_length=100,
-        description="EAN, UPC, or other barcode"
-    )
+    sku: Optional[str] = Field(None, max_length=100, description="Stock Keeping Unit")
+    barcode: Optional[str] = Field(None, max_length=100, description="EAN, UPC, or other barcode")
     category_id: Optional[uuid.UUID] = None
     drug_type: str = Field(
         default="otc",
-        pattern="^(prescription|otc|controlled|herbal|supplement)$"
+        pattern="^(prescription|otc|controlled|herbal|supplement)$",
+        description="Type of drug"
     )
-    dosage_form: Optional[str] = Field(
-        None,
-        max_length=100,
-        description="tablet, capsule, syrup, injection, cream, etc."
-    )
+    dosage_form: Optional[str] = Field(None, max_length=100, description="tablet, capsule, syrup, etc.")
     strength: Optional[str] = Field(None, max_length=100, description="e.g., 500mg, 10mg/ml")
     manufacturer: Optional[str] = Field(None, max_length=255)
     supplier: Optional[str] = Field(None, max_length=255)
     ndc_code: Optional[str] = Field(None, max_length=50, description="National Drug Code")
-    requires_prescription: bool = False
+    requires_prescription: bool = Field(default=False)
     controlled_substance_schedule: Optional[str] = Field(
-        None,
-        max_length=10,
-        pattern="^(I|II|III|IV|V)$",
-        description="DEA Schedule I-V"
-    )
-    unit_price: Decimal = Field(
-        ..., 
-        ge=0, 
-        decimal_places=2,
-        description="Selling price per unit"
-    )
-    cost_price: Optional[Decimal] = Field(
         None, 
-        ge=0, 
-        decimal_places=2,
+        max_length=10,
+        description="DEA Schedule I-V for controlled substances"
+    )
+    unit_price: Optional[Money] = Field(
+        None,
+        description="Cost/acquisition price per drug unit"
+    )
+    cost_price: Optional[Money] = Field(
+        None,
         description="Cost/acquisition price"
     )
-    markup_percentage: Optional[Decimal] = Field(
+    markup_percentage: Optional[Money] = Field(
         None,
-        ge=0,
-        le=1000,
-        decimal_places=2
+        description="Markup percentage over cost price"
     )
-    tax_rate: Decimal = Field(
-        default=Decimal("0"),
-        ge=0,
-        le=100,
-        decimal_places=2,
+    tax_rate: Optional[Money] = Field(
+        None,
         description="Tax rate as percentage"
     )
-    reorder_level: int = Field(default=10, ge=0, description="Reorder trigger threshold")
+    reorder_level: int = Field(default=10, ge=0, description="Trigger reorder when stock falls below")
     reorder_quantity: int = Field(default=50, ge=1, description="Suggested reorder quantity")
-    max_stock_level: Optional[int] = Field(None, ge=1)
+    max_stock_level: Optional[int] = Field(None, ge=0, description="Maximum stock to maintain")
     unit_of_measure: str = Field(
         default="unit",
         max_length=50,
@@ -84,202 +67,154 @@ class DrugBase(BaseSchema):
     side_effects: Optional[str] = None
     contraindications: Optional[str] = None
     storage_conditions: Optional[str] = None
-    image_url: Optional[str] = Field(None, max_length=500)
-
-    @field_validator('cost_price')
+    image_url: Optional[str] = None
+    is_active: bool = Field(default=True)
+    
+    @field_validator('sku', 'barcode')
     @classmethod
-    def validate_cost_vs_price(cls, v: Optional[Decimal], info) -> Optional[Decimal]:
-        """Warn if cost price exceeds unit price"""
-        if v and 'unit_price' in info.data:
-            unit_price = info.data.get('unit_price')
-            if v > unit_price:
-                # Allow but log warning - some items sold at loss
-                pass
+    def validate_alphanumeric(cls, v: Optional[str]) -> Optional[str]:
+        """Validate SKU and barcode are alphanumeric"""
+        if v and not re.match(r'^[A-Za-z0-9\-_]+$', v):
+            raise ValueError('Must contain only letters, numbers, hyphens, and underscores')
         return v
-
-    @computed_field
-    @property
-    def profit_margin(self) -> Optional[Decimal]:
-        """Calculate profit margin percentage"""
-        if self.cost_price and self.cost_price > 0:
-            margin = ((self.unit_price - self.cost_price) / self.cost_price) * 100
-            return round(margin, 2)
-        return None
+    
+    @field_validator('unit_price', 'cost_price')
+    @classmethod
+    def validate_price(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        """Validate prices are reasonable"""
+        if v and v > 1000000:
+            raise ValueError('Price exceeds maximum allowed value')
+        return v
 
 
 class DrugCreate(DrugBase):
+    """Schema for creating a drug"""
     organization_id: uuid.UUID
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "name": "Paracetamol 500mg",
-                "generic_name": "Acetaminophen",
-                "brand_name": "Tylenol",
-                "sku": "PARA500-001",
-                "barcode": "1234567890123",
-                "category_id": "123e4567-e89b-12d3-a456-426614174000",
-                "drug_type": "otc",
-                "dosage_form": "tablet",
-                "strength": "500mg",
-                "manufacturer": "Pharma Corp",
-                "unit_price": "5.99",
-                "cost_price": "2.50",
-                "tax_rate": "10.00",
-                "reorder_level": 100,
-                "reorder_quantity": 500,
-                "organization_id": "123e4567-e89b-12d3-a456-426614174001"
-            }
-        }
-    )
 
 
 class DrugUpdate(BaseSchema):
-    name: Optional[str] = Field(None, min_length=2, max_length=255)
+    """Schema for updating a drug (all fields optional)"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
     generic_name: Optional[str] = None
     brand_name: Optional[str] = None
+    sku: Optional[str] = None
+    barcode: Optional[str] = None
     category_id: Optional[uuid.UUID] = None
-    unit_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
-    cost_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
-    tax_rate: Optional[Decimal] = Field(None, ge=0, le=100, decimal_places=2)
+    drug_type: Optional[str] = Field(
+        None,
+        pattern="^(prescription|otc|controlled|herbal|supplement)$"
+    )
+    dosage_form: Optional[str] = None
+    strength: Optional[str] = None
+    manufacturer: Optional[str] = None
+    supplier: Optional[str] = None
+    ndc_code: Optional[str] = None
+    requires_prescription: Optional[bool] = None
+    controlled_substance_schedule: Optional[str] = None
+    unit_price: Optional[Money] = Field(
+        None,
+        description="Cost/acquisition price per drug unit"
+    )
+    cost_price: Optional[Money] = Field(
+        None,
+        description="Cost/acquisition price"
+    )
+    markup_percentage: Optional[Decimal] = None
+    tax_rate: Optional[Decimal] = Field(None, ge=0, le=100)
     reorder_level: Optional[int] = Field(None, ge=0)
     reorder_quantity: Optional[int] = Field(None, ge=1)
+    max_stock_level: Optional[int] = None
+    unit_of_measure: Optional[str] = None
     description: Optional[str] = None
+    usage_instructions: Optional[str] = None
+    side_effects: Optional[str] = None
+    contraindications: Optional[str] = None
+    storage_conditions: Optional[str] = None
     image_url: Optional[str] = None
     is_active: Optional[bool] = None
 
 
 class DrugResponse(DrugBase, TimestampSchema, SyncSchema):
+    """Schema for drug API responses"""
     id: uuid.UUID
     organization_id: uuid.UUID
-    is_active: bool
-    deleted_at: Optional[datetime] = None
+    
+    @computed_field
+    @property
+    def profit_margin(self) -> Optional[float]:
+        """Calculate profit margin if cost price is available"""
+        if self.cost_price and self.cost_price > 0:
+            return float(((self.unit_price - self.cost_price) / self.cost_price) * 100)
+        return None
+    
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DrugWithInventory(DrugResponse):
-    """Drug with inventory information for specific branch"""
-    inventory_id: Optional[uuid.UUID] = None
-    quantity: int = 0
-    reserved_quantity: int = 0
+    """Drug response with inventory information"""
+    total_quantity: int = 0
     available_quantity: int = 0
-    location: Optional[str] = None
-
-
-class DrugSearchResponse(BaseSchema):
-    """Paginated drug search results"""
-    items: List[DrugResponse]
-    total: int = Field(..., ge=0)
-    page: int = Field(..., ge=1)
-    page_size: int = Field(..., ge=1, le=500)
-    total_pages: int = Field(..., ge=0)
-    has_next: bool
-    has_prev: bool
-
-
-# ============================================
-# Inventory Schemas
-# ============================================
-
-class BranchInventoryBase(BaseSchema):
-    quantity: int = Field(..., ge=0, description="Total available quantity")
-    reserved_quantity: int = Field(default=0, ge=0, description="Reserved for orders")
-    location: Optional[str] = Field(None, max_length=100, description="Shelf/bin location")
-
-    @model_validator(mode='after')
-    def validate_quantities(self) -> 'BranchInventoryBase':
-        """Ensure reserved <= quantity"""
-        if self.reserved_quantity > self.quantity:
-            raise ValueError("Reserved quantity cannot exceed total quantity")
-        return self
-
+    reserved_quantity: int = 0
+    inventory_status: str = "unknown"  # in_stock, low_stock, out_of_stock
+    
     @computed_field
     @property
-    def available_quantity(self) -> int:
-        """Calculate available quantity"""
-        return max(0, self.quantity - self.reserved_quantity)
+    def needs_reorder(self) -> bool:
+        """Check if drug needs reordering"""
+        return self.total_quantity <= self.reorder_level
 
 
-class BranchInventoryCreate(BranchInventoryBase):
-    branch_id: uuid.UUID
-    drug_id: uuid.UUID
+class DrugCategoryBase(BaseSchema):
+    """Base drug category fields"""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    parent_id: Optional[uuid.UUID] = None
 
 
-class BranchInventoryUpdate(BaseSchema):
-    quantity: Optional[int] = Field(None, ge=0)
-    reserved_quantity: Optional[int] = Field(None, ge=0)
-    location: Optional[str] = None
+class DrugCategoryCreate(DrugCategoryBase):
+    """Schema for creating a drug category"""
+    organization_id: uuid.UUID
 
 
-class BranchInventoryResponse(BranchInventoryBase, TimestampSchema, SyncSchema):
+class DrugCategoryUpdate(BaseSchema):
+    """Schema for updating a drug category"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    parent_id: Optional[uuid.UUID] = None
+
+
+class DrugCategoryResponse(DrugCategoryBase, TimestampSchema, SyncSchema):
+    """Schema for drug category API responses"""
     id: uuid.UUID
-    branch_id: uuid.UUID
-    drug_id: uuid.UUID
+    organization_id: uuid.UUID
+    path: Optional[str] = None
+    level: int
+    
+    model_config = ConfigDict(from_attributes=True)
 
 
-class BranchInventoryWithDrug(BranchInventoryResponse):
-    """Inventory with drug details"""
-    drug: DrugResponse
+class DrugCategoryTree(DrugCategoryResponse):
+    """Drug category with nested children"""
+    children: List["DrugCategoryTree"] = []
 
 
-# ============================================
-# Drug Batch Schemas
-# ============================================
-
-class DrugBatchBase(BaseSchema):
-    batch_number: str = Field(..., min_length=1, max_length=100)
-    quantity: int = Field(..., gt=0, description="Initial quantity received")
-    remaining_quantity: int = Field(..., ge=0)
-    manufacturing_date: Optional[date] = None
-    expiry_date: date = Field(..., description="Critical for safety")
-    cost_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
-    selling_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
-    supplier: Optional[str] = Field(None, max_length=255)
-
-    @model_validator(mode='after')
-    def validate_batch_quantities(self) -> 'DrugBatchBase':
-        """Validate batch quantities"""
-        if self.remaining_quantity > self.quantity:
-            raise ValueError("Remaining quantity cannot exceed initial quantity")
-        
-        if self.manufacturing_date and self.expiry_date:
-            if self.manufacturing_date >= self.expiry_date:
-                raise ValueError("Manufacturing date must be before expiry date")
-        
-        return self
+class DrugSearchFilters(BaseSchema):
+    """Filters for drug search"""
+    search: Optional[str] = Field(None, description="Search term for name, generic_name, SKU, barcode")
+    category_id: Optional[uuid.UUID] = None
+    drug_type: Optional[str] = None
+    requires_prescription: Optional[bool] = None
+    is_active: Optional[bool] = True
+    min_price: Optional[Decimal] = None
+    max_price: Optional[Decimal] = None
+    manufacturer: Optional[str] = None
+    supplier: Optional[str] = None
 
 
-class DrugBatchCreate(DrugBatchBase):
-    branch_id: uuid.UUID
-    drug_id: uuid.UUID
-    purchase_order_id: Optional[uuid.UUID] = None
-
-
-class DrugBatchUpdate(BaseSchema):
-    remaining_quantity: Optional[int] = Field(None, ge=0)
-    expiry_date: Optional[date] = None
-
-
-class DrugBatchResponse(DrugBatchBase, TimestampSchema, SyncSchema):
-    id: uuid.UUID
-    branch_id: uuid.UUID
-    drug_id: uuid.UUID
-    purchase_order_id: Optional[uuid.UUID] = None
-
-    @computed_field
-    @property
-    def is_expired(self) -> bool:
-        """Check if batch is expired"""
-        from datetime import date
-        return self.expiry_date < date.today()
-
-    @computed_field
-    @property
-    def days_until_expiry(self) -> int:
-        """Days remaining until expiry"""
-        from datetime import date
-        delta = self.expiry_date - date.today()
-        return max(0, delta.days)
-
+class BulkDrugUpdate(BaseSchema):
+    """Schema for bulk updating multiple drugs"""
+    drug_ids: List[uuid.UUID] = Field(..., min_length=1, max_length=100)
+    updates: DrugUpdate
 
 # ============================================
 # Stock Adjustment Schemas
@@ -548,7 +483,7 @@ class SupplierBase(BaseSchema):
         max_length=100,
         description="NET30, NET60, COD, etc."
     )
-    credit_limit: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
+    credit_limit: Optional[Money] = Field(None, description="Maximum credit limit allowed for supplier")
 
 
 class SupplierCreate(SupplierBase):
@@ -569,7 +504,7 @@ class SupplierUpdate(BaseSchema):
 class SupplierResponse(SupplierBase, TimestampSchema, SyncSchema):
     id: uuid.UUID
     organization_id: uuid.UUID
-    rating: Optional[Decimal] = Field(None, ge=0, le=5, decimal_places=2)
+    rating: Optional[Money] = Field(None, description="Supplier rating")
     total_orders: int
     total_value: Decimal
     is_active: bool
@@ -583,11 +518,11 @@ class SupplierResponse(SupplierBase, TimestampSchema, SyncSchema):
 class PurchaseOrderItemBase(BaseSchema):
     drug_id: uuid.UUID
     quantity_ordered: int = Field(..., gt=0)
-    unit_cost: Decimal = Field(..., ge=0, decimal_places=2)
+    unit_cost: Money = Field(..., description="Cost per unit of the drug")
 
     @computed_field
     @property
-    def total_cost(self) -> Decimal:
+    def total_cost(self) -> Money:
         """Calculate total cost for this item"""
         return self.unit_cost * self.quantity_ordered
 
