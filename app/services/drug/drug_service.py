@@ -2,8 +2,13 @@
 Drug Service
 Business logic for drug/product management
 """
-from app.schemas.branch_schemas import DrugCategoryCreate, DrugUpdate
-from app.schemas.drugs_schemas import BulkDrugUpdate, DrugCreate
+from app.schemas.drugs_schemas import (
+    BulkDrugUpdate, 
+    DrugCreate,
+    DrugUpdate,
+    DrugCategoryCreate
+    
+    )
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 from fastapi import HTTPException, status

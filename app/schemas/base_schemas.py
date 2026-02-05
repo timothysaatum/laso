@@ -5,7 +5,7 @@ from pydantic import (
 )
 from typing import Any, Dict, List, Optional, TypeAlias
 from datetime import datetime, timezone
-
+import uuid
 
 Money: TypeAlias = Annotated[
     Decimal,
@@ -85,3 +85,9 @@ class HealthCheckResponse(BaseSchema):
     cache: Optional[str] = Field(None, pattern="^(connected|disconnected)$")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     checks: Dict[str, bool] = Field(default_factory=dict)
+
+class SoftDeleteSchema(BaseSchema):
+    """Schema with soft delete fields"""
+    is_deleted: bool
+    deleted_at: Optional[datetime] = None
+    deleted_by: Optional[uuid.UUID] = None

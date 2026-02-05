@@ -1,13 +1,15 @@
-from app.schemas.base_schemas import BaseSchema, SyncSchema, TimestampSchema
-from app.schemas.branch_schemas import BranchInventoryResponse, DrugCategoryResponse, DrugResponse
+from app.schemas.base_schemas import BaseSchema
 from pydantic import (
-    EmailStr, Field, field_validator, 
+    Field, field_validator, 
     model_validator, computed_field
 )
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date, timezone
 from decimal import Decimal
 import uuid
+
+from app.schemas.drugs_schemas import DrugCategoryResponse, DrugResponse
+from app.schemas.inventory_schemas import BranchInventoryResponse
 
 
 

@@ -22,7 +22,6 @@ from app.schemas.organization_onboarding_schemas import (
     OrganizationOnboardingResponse,
     SubscriptionUpdateRequest,
     OrganizationActivationRequest,
-    OrganizationListResponse,
     OrganizationStatsResponse,
     OrganizationSettingsUpdate
 )

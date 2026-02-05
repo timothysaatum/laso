@@ -14,11 +14,14 @@ from app.core.deps import (
 from app.models.user.user_model import User
 from app.services.inventory.inventory_service import InventoryService
 from app.schemas.inventory_schemas import (
-    BranchInventoryCreate, BranchInventoryResponse,
-    DrugBatchCreate, DrugBatchResponse, StockAdjustmentCreate,
-    StockAdjustmentResponse, StockTransferCreate, StockTransferResponse,
+    BranchInventoryCreate, BranchInventoryUpdate, BranchInventoryResponse,
+    BranchInventoryWithDetails, DrugBatchCreate, DrugBatchUpdate,
+    DrugBatchResponse, DrugBatchWithDetails, StockAdjustmentCreate,
+    StockAdjustmentResponse, StockAdjustmentWithDetails,
+    StockTransferCreate, StockTransferResponse,
     LowStockReport, ExpiringBatchReport, InventoryValuationResponse
 )
+from app.utils.pagination import Paginator, PaginationParams, PaginatedResponse
 
 
 router = APIRouter(prefix="/inventory", tags=["Inventory Management"])
@@ -26,24 +29,33 @@ router = APIRouter(prefix="/inventory", tags=["Inventory Management"])
 
 # Branch Inventory Endpoints
 
-@router.get("/branch/{branch_id}", response_model=List[BranchInventoryResponse])
+@router.get("/branch/{branch_id}", response_model=PaginatedResponse[BranchInventoryResponse])
 async def get_branch_inventory(
     branch_id: uuid.UUID,
+    pagination: PaginationParams = Depends(),
     drug_id: Optional[uuid.UUID] = Query(None, description="Filter by specific drug"),
     include_zero_stock: bool = Query(False, description="Include items with zero quantity"),
+    search: Optional[str] = Query(None, description="Search drug name or SKU"),
+    low_stock_only: bool = Query(False, description="Show only low stock items"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get inventory for a branch
+    Get paginated inventory for a branch
     
     **Query Parameters**:
+    - page: Page number (default: 1)
+    - page_size: Items per page (default: 50, max: 500)
     - drug_id: Optional - Filter for specific drug
     - include_zero_stock: Include items with zero quantity (default: false)
+    - search: Search drug name or SKU
+    - low_stock_only: Show only items at or below reorder level
     
-    **Returns**: List of inventory items for the branch
+    **Returns**: Paginated list of inventory items for the branch
     
     **Note**: Only returns inventory for user's assigned branches
+    
+    **Performance**: Uses pagination to handle large inventories efficiently
     """
     # Check if user has access to this branch
     if branch_id not in current_user.assigned_branches:
@@ -52,46 +64,49 @@ async def get_branch_inventory(
             detail="You don't have access to this branch"
         )
     
-    inventory = await InventoryService.get_branch_inventory(
+    result = await InventoryService.get_branch_inventory_paginated(
         db=db,
         branch_id=branch_id,
+        pagination=pagination,
         drug_id=drug_id,
-        include_zero_stock=include_zero_stock
+        include_zero_stock=include_zero_stock,
+        search=search,
+        low_stock_only=low_stock_only
     )
     
-    return inventory
+    return result
 
 
-@router.post("/branch", response_model=BranchInventoryResponse, status_code=status.HTTP_201_CREATED)
-async def create_or_update_inventory(
-    inventory_data: BranchInventoryCreate,
-    current_user: User = Depends(require_permission("manage_inventory")),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Create or update branch inventory
+# @router.post("/branch", response_model=BranchInventoryResponse, status_code=status.HTTP_201_CREATED)
+# async def create_or_update_inventory(
+#     inventory_data: BranchInventoryCreate,
+#     current_user: User = Depends(require_permission("manage_inventory")),
+#     db: AsyncSession = Depends(get_db)
+# ):
+#     """
+#     Create or update branch inventory
     
-    **Required Permission**: manage_inventory
+#     **Required Permission**: manage_inventory
     
-    **Note**: If inventory already exists, it will be updated
+#     **Note**: If inventory already exists, it will be updated
     
-    **Returns**: Created or updated inventory
-    """
-    if inventory_data.branch_id not in current_user.assigned_branches:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have access to this branch"
-        )
+#     **Returns**: Created or updated inventory
+#     """
+#     if inventory_data.branch_id not in current_user.assigned_branches:
+#         raise HTTPException(
+#             status_code=status.HTTP_403_FORBIDDEN,
+#             detail="You don't have access to this branch"
+#         )
     
-    inventory = await InventoryService.create_or_update_inventory(
-        db=db,
-        branch_id=inventory_data.branch_id,
-        drug_id=inventory_data.drug_id,
-        quantity=inventory_data.quantity,
-        location=inventory_data.location
-    )
+#     inventory = await InventoryService.create_or_update_inventory(
+#         db=db,
+#         branch_id=inventory_data.branch_id,
+#         drug_id=inventory_data.drug_id,
+#         quantity=inventory_data.quantity,
+#         location=inventory_data.location
+#     )
     
-    return inventory
+#     return inventory
 
 
 @router.post("/reserve", status_code=status.HTTP_200_OK)
@@ -313,26 +328,31 @@ async def create_drug_batch(
     return batch
 
 
-@router.get("/batches/drug/{drug_id}", response_model=List[DrugBatchResponse])
+@router.get("/batches/drug/{drug_id}", response_model=PaginatedResponse[DrugBatchResponse])
 async def get_drug_batches(
     drug_id: uuid.UUID,
+    pagination: PaginationParams = Depends(),
     branch_id: Optional[uuid.UUID] = Query(None, description="Filter by branch"),
     include_expired: bool = Query(False, description="Include expired batches"),
     include_empty: bool = Query(False, description="Include empty batches"),
+    expiring_within_days: Optional[int] = Query(None, ge=1, le=365, description="Show batches expiring within N days"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get batches for a drug
+    Get paginated batches for a drug
     
     **Query Parameters**:
+    - page: Page number (default: 1)
+    - page_size: Items per page (default: 50, max: 500)
     - branch_id: Optional - Filter by specific branch
     - include_expired: Include expired batches (default: false)
     - include_empty: Include batches with zero quantity (default: false)
+    - expiring_within_days: Show only batches expiring within N days
     
     **Ordering**: FEFO (First Expired First Out) - sorted by expiry date
     
-    **Returns**: List of drug batches
+    **Returns**: Paginated list of drug batches
     """
     # If branch_id specified, check access
     if branch_id and branch_id not in current_user.assigned_branches:
@@ -341,15 +361,17 @@ async def get_drug_batches(
             detail="You don't have access to this branch"
         )
     
-    batches = await InventoryService.get_batches_for_drug(
+    result = await InventoryService.get_batches_paginated(
         db=db,
         drug_id=drug_id,
+        pagination=pagination,
         branch_id=branch_id,
         include_expired=include_expired,
-        include_empty=include_empty
+        include_empty=include_empty,
+        expiring_within_days=expiring_within_days
     )
     
-    return batches
+    return result
 
 
 @router.post("/batches/{batch_id}/consume", response_model=DrugBatchResponse)

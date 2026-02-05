@@ -3,9 +3,10 @@ Inventory Service
 Business logic for inventory management, stock adjustments, and transfers
 """
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func, and_, or_, delete
+from sqlalchemy.orm import selectinload, joinedload
 from fastapi import HTTPException, status
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone, date, timedelta
 from decimal import Decimal
 import uuid
@@ -14,11 +15,16 @@ from app.models.inventory.branch_inventory import (
     BranchInventory, DrugBatch, StockAdjustment
 )
 from app.models.inventory.inventory_model import Drug
+from app.models.pharmacy.pharmacy_model import Branch
 from app.schemas.inventory_schemas import (
-    DrugBatchCreate, LowStockItem, LowStockReport,
+    BranchInventoryCreate, BranchInventoryResponse, BranchInventoryUpdate, DrugBatchCreate, DrugBatchResponse,
+    StockAdjustmentCreate, StockTransferCreate,
+    LowStockItem, LowStockReport,
     ExpiringBatchItem, ExpiringBatchReport,
     InventoryValuationItem, InventoryValuationResponse
 )
+from app.schemas.syst_schemas import PaginationParams
+from app.utils.pagination import PaginatedResponse
 
 
 class InventoryService:
@@ -32,7 +38,7 @@ class InventoryService:
         include_zero_stock: bool = False
     ) -> List[BranchInventory]:
         """
-        Get inventory for a branch
+        Get inventory for a branch (non-paginated - for internal use)
         
         Args:
             db: Database session
@@ -55,6 +61,115 @@ class InventoryService:
         
         result = await db.execute(query)
         return result.scalars().all()
+    
+    @staticmethod
+    async def get_branch_inventory_paginated(
+        db: AsyncSession,
+        branch_id: uuid.UUID,
+        pagination: 'PaginationParams',
+        drug_id: Optional[uuid.UUID] = None,
+        include_zero_stock: bool = False,
+        search: Optional[str] = None,
+        low_stock_only: bool = False
+    ) -> 'PaginatedResponse[BranchInventory]':
+        """
+        Get paginated inventory for a branch with filters
+        
+        Args:
+            db: Database session
+            branch_id: Branch ID
+            pagination: Pagination parameters
+            drug_id: Optional drug ID to filter
+            include_zero_stock: Include items with zero quantity
+            search: Search drug name or SKU
+            low_stock_only: Show only items at or below reorder level
+            
+        Returns:
+            PaginatedResponse with BranchInventory objects
+        """
+        from app.utils.pagination import Paginator
+        from sqlalchemy.orm import selectinload
+        
+        # Build query with joins for search and filtering
+        query = (
+            select(BranchInventory)
+            .options(selectinload(BranchInventory.drug))
+            .where(BranchInventory.branch_id == branch_id)
+        )
+        
+        if drug_id:
+            query = query.where(BranchInventory.drug_id == drug_id)
+        
+        if not include_zero_stock:
+            query = query.where(BranchInventory.quantity > 0)
+        
+        # Search filter
+        if search:
+            search_pattern = f"%{search}%"
+            query = query.join(Drug, BranchInventory.drug_id == Drug.id)
+            query = query.where(
+                or_(
+                    Drug.name.ilike(search_pattern),
+                    Drug.generic_name.ilike(search_pattern),
+                    Drug.sku.ilike(search_pattern),
+                    Drug.barcode.ilike(search_pattern)
+                )
+            )
+        
+        # Low stock filter
+        if low_stock_only:
+            if not search:  # Join if not already joined
+                query = query.join(Drug, BranchInventory.drug_id == Drug.id)
+            query = query.where(BranchInventory.quantity <= Drug.reorder_level)
+        
+        # Order by drug name for consistent pagination
+        if search or low_stock_only:
+            query = query.order_by(Drug.name)
+        else:
+            # If Drug not joined, join for ordering
+            query = query.join(Drug, BranchInventory.drug_id == Drug.id)
+            query = query.order_by(Drug.name)
+        
+        # Create count query for pagination
+        count_query = (
+            select(func.count())
+            .select_from(BranchInventory)
+            .where(BranchInventory.branch_id == branch_id)
+        )
+        
+        if drug_id:
+            count_query = count_query.where(BranchInventory.drug_id == drug_id)
+        
+        if not include_zero_stock:
+            count_query = count_query.where(BranchInventory.quantity > 0)
+        
+        if search:
+            count_query = count_query.join(Drug, BranchInventory.drug_id == Drug.id)
+            search_pattern = f"%{search}%"
+            count_query = count_query.where(
+                or_(
+                    Drug.name.ilike(search_pattern),
+                    Drug.generic_name.ilike(search_pattern),
+                    Drug.sku.ilike(search_pattern),
+                    Drug.barcode.ilike(search_pattern)
+                )
+            )
+        
+        if low_stock_only:
+            if not search:
+                count_query = count_query.join(Drug, BranchInventory.drug_id == Drug.id)
+            count_query = count_query.where(BranchInventory.quantity <= Drug.reorder_level)
+        
+        # Use paginator with custom count query
+        paginator = Paginator(db)
+        result = await paginator.paginate_raw_query(
+            query=query,
+            count_query=count_query,
+            params=pagination,
+            schema=BranchInventoryResponse
+        )
+        
+        return result
     
     @staticmethod
     async def create_or_update_inventory(
@@ -472,7 +587,7 @@ class InventoryService:
         include_empty: bool = False
     ) -> List[DrugBatch]:
         """
-        Get batches for a drug
+        Get batches for a drug (non-paginated - for internal use)
         
         Args:
             db: Database session
@@ -500,6 +615,76 @@ class InventoryService:
         
         result = await db.execute(query)
         return result.scalars().all()
+    
+    @staticmethod
+    async def get_batches_paginated(
+        db: AsyncSession,
+        drug_id: uuid.UUID,
+        pagination: 'PaginationParams',
+        branch_id: Optional[uuid.UUID] = None,
+        include_expired: bool = False,
+        include_empty: bool = False,
+        expiring_within_days: Optional[int] = None
+    ) -> 'PaginatedResponse[DrugBatch]':
+        """
+        Get paginated batches for a drug
+        
+        Args:
+            db: Database session
+            drug_id: Drug ID
+            pagination: Pagination parameters
+            branch_id: Optional branch ID filter
+            include_expired: Include expired batches
+            include_empty: Include batches with zero quantity
+            expiring_within_days: Show only batches expiring within N days
+            
+        Returns:
+            PaginatedResponse with DrugBatch objects
+        """
+        from app.utils.pagination import Paginator
+        
+        query = select(DrugBatch).where(DrugBatch.drug_id == drug_id)
+        count_query = select(func.count()).select_from(DrugBatch).where(DrugBatch.drug_id == drug_id)
+        
+        if branch_id:
+            query = query.where(DrugBatch.branch_id == branch_id)
+            count_query = count_query.where(DrugBatch.branch_id == branch_id)
+        
+        if not include_expired:
+            query = query.where(DrugBatch.expiry_date >= date.today())
+            count_query = count_query.where(DrugBatch.expiry_date >= date.today())
+        
+        if not include_empty:
+            query = query.where(DrugBatch.remaining_quantity > 0)
+            count_query = count_query.where(DrugBatch.remaining_quantity > 0)
+        
+        if expiring_within_days:
+            expiry_threshold = date.today() + timedelta(days=expiring_within_days)
+            query = query.where(
+                and_(
+                    DrugBatch.expiry_date >= date.today(),
+                    DrugBatch.expiry_date <= expiry_threshold
+                )
+            )
+            count_query = count_query.where(
+                and_(
+                    DrugBatch.expiry_date >= date.today(),
+                    DrugBatch.expiry_date <= expiry_threshold
+                )
+            )
+        
+        # Order by expiry date (FEFO - First Expired First Out)
+        query = query.order_by(DrugBatch.expiry_date, DrugBatch.created_at)
+        
+        paginator = Paginator(db)
+        result = await paginator.paginate_raw_query(
+            query=query,
+            count_query=count_query,
+            params=pagination,
+            schema=DrugBatchResponse
+        )
+        
+        return result
     
     @staticmethod
     async def consume_from_batch(
@@ -568,7 +753,7 @@ class InventoryService:
         Returns:
             LowStockReport
         """
-        from app.models.pharmacy.pharmacy_model import Branch
+        from app.models.pharmacy.pharmacy_model import Organization, Branch
         
         # Query for low stock items
         query = (
