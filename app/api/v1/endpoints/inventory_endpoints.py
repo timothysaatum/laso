@@ -318,7 +318,7 @@ async def create_drug_batch(
     **Errors**:
     - 400: Batch already exists, validation error
     """
-    if batch_data.branch_id not in current_user.assigned_branches:
+    if str(batch_data.branch_id) not in current_user.assigned_branches:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You don't have access to this branch"

@@ -469,4 +469,4 @@ class AuthService:
                 UserSession.expires_at > datetime.now(timezone.utc)
             ).order_by(UserSession.created_at.desc())
         )
-        return result.scalars().all()
+        return list(result.scalars().all())

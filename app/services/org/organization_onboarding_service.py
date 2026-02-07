@@ -17,6 +17,7 @@ import uuid
 from app.models.pharmacy.pharmacy_model import Organization, Branch
 from app.models.user.user_model import User
 from app.models.system_md.sys_models import AuditLog
+from app.schemas.branch_schemas import BranchCreate, BranchAddress
 
 
 class OrganizationOnboardingService:
@@ -25,11 +26,28 @@ class OrganizationOnboardingService:
     def __init__(self, db: AsyncSession):
         self.db = db
     
+    @staticmethod
+    def _normalize_address_dict(address: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        Normalize address dict to match BranchAddress schema.
+        Converts 'zip' to 'zip_code' if present.
+        """
+        if not address:
+            return None
+        
+        normalized = address.copy()
+        
+        # Handle zip -> zip_code conversion
+        if "zip" in normalized:
+            normalized["zip_code"] = normalized.pop("zip")
+        
+        return normalized
+    
     async def create_organization_with_admin(
         self,
         org_data: Dict[str, Any],
         admin_data: Dict[str, Any],
-        branches_data: Optional[List[Dict[str, Any]]] = None,
+        branches_data: Optional[List[Dict[str, Any]]] = None,  # Changed to Dict for flexibility
         created_by: Optional[uuid.UUID] = None
     ) -> Dict[str, Any]:
         """
@@ -67,10 +85,27 @@ class OrganizationOnboardingService:
             
             # Create branches
             if branches_data and len(branches_data) > 0:
+                # Normalize branch addresses and convert to BranchCreate objects
+                normalized_branches = []
+                for branch_dict in branches_data:
+                    # Normalize address
+                    if "address" in branch_dict and branch_dict["address"]:
+                        branch_dict["address"] = self._normalize_address_dict(branch_dict["address"])
+                    
+                    # Convert to BranchCreate Pydantic model
+                    try:
+                        branch_create = BranchCreate(**branch_dict)
+                        normalized_branches.append(branch_create)
+                    except Exception as e:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Invalid branch data: {str(e)}"
+                        )
+                
                 # Create provided branches
                 created_branches = await self._create_multiple_branches(
                     organization_id=organization.id,
-                    branches_data=branches_data,
+                    branches_data=normalized_branches,
                     manager_id=admin_user.id
                 )
             else:
@@ -207,6 +242,9 @@ class OrganizationOnboardingService:
         # Merge with provided settings
         settings = {**default_settings, **org_data.get("settings", {})}
         
+        # Normalize organization address if present
+        org_address = self._normalize_address_dict(org_data.get("address"))
+        
         organization = Organization(
             name=org_data["name"],
             type=org_data["type"],
@@ -214,7 +252,7 @@ class OrganizationOnboardingService:
             tax_id=org_data.get("tax_id"),
             phone=org_data.get("phone"),
             email=org_data.get("email"),
-            address=org_data.get("address"),
+            address=org_address,
             settings=settings,
             subscription_tier=subscription_tier,
             subscription_expires_at=subscription_expires_at,
@@ -222,7 +260,7 @@ class OrganizationOnboardingService:
         )
         
         self.db.add(organization)
-        await self.db.flush()  # Get the ID without committing
+        await self.db.flush()
         
         return organization
     
@@ -231,7 +269,7 @@ class OrganizationOnboardingService:
         admin_data: Dict[str, Any],
         organization_id: uuid.UUID
     ) -> User:
-        """Create admin user for the organization"""
+        """Create admin user for organization"""
         admin = User(
             organization_id=organization_id,
             username=admin_data["username"],
@@ -244,10 +282,7 @@ class OrganizationOnboardingService:
             two_factor_enabled=False,
             assigned_branches=[]  # Will be updated after branch creation
         )
-        
-        # Set password
         admin.set_password(admin_data["password"])
-        
         self.db.add(admin)
         await self.db.flush()
         
@@ -259,28 +294,27 @@ class OrganizationOnboardingService:
         org_name: str,
         manager_id: uuid.UUID
     ) -> Branch:
-        """Create default branch for the organization"""
-        # Generate branch code
+        """Create default main branch for organization"""
         branch_code = await self._generate_branch_code(organization_id)
+        
+        # Default operating hours
+        default_hours = {
+            "monday": {"open": "09:00", "close": "18:00"},
+            "tuesday": {"open": "09:00", "close": "18:00"},
+            "wednesday": {"open": "09:00", "close": "18:00"},
+            "thursday": {"open": "09:00", "close": "18:00"},
+            "friday": {"open": "09:00", "close": "18:00"},
+            "saturday": {"open": "09:00", "close": "14:00"},
+            "sunday": {"closed": True}
+        }
         
         branch = Branch(
             organization_id=organization_id,
             name=f"{org_name} - Main Branch",
             code=branch_code,
-            phone=None,
-            email=None,
-            address=None,
             manager_id=manager_id,
             is_active=True,
-            operating_hours={
-                "monday": {"open": "09:00", "close": "18:00"},
-                "tuesday": {"open": "09:00", "close": "18:00"},
-                "wednesday": {"open": "09:00", "close": "18:00"},
-                "thursday": {"open": "09:00", "close": "18:00"},
-                "friday": {"open": "09:00", "close": "18:00"},
-                "saturday": {"open": "09:00", "close": "14:00"},
-                "sunday": {"closed": True}
-            }
+            operating_hours=default_hours
         )
         
         self.db.add(branch)
@@ -291,7 +325,7 @@ class OrganizationOnboardingService:
     async def _create_multiple_branches(
         self,
         organization_id: uuid.UUID,
-        branches_data: List[Dict[str, Any]],
+        branches_data: List[BranchCreate],  # Now properly typed as BranchCreate
         manager_id: uuid.UUID
     ) -> List[Branch]:
         """Create multiple branches for the organization"""
@@ -312,16 +346,19 @@ class OrganizationOnboardingService:
                 "sunday": {"closed": True}
             }
             
+            # Now branch_data is a BranchCreate object, so model_dump() works
+            data = branch_data.model_dump()
+            
             branch = Branch(
                 organization_id=organization_id,
-                name=branch_data["name"],
+                name=data["name"],
                 code=branch_code,
-                phone=branch_data.get("phone"),
-                email=branch_data.get("email"),
-                address=branch_data.get("address"),
+                phone=data.get("phone"),
+                email=data.get("email"),
+                address=data.get("address"),
                 manager_id=manager_id,
                 is_active=True,
-                operating_hours=branch_data.get("operating_hours", default_hours)
+                operating_hours=data.get("operating_hours", default_hours),
             )
             
             self.db.add(branch)

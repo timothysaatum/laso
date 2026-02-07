@@ -15,6 +15,7 @@ from fastapi import HTTPException, status
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone
 import uuid
+from sqlalchemy.orm import selectinload
 
 from app.models.inventory.inventory_model import Drug, DrugCategory
 from app.models.inventory.branch_inventory import BranchInventory
@@ -367,7 +368,7 @@ class DrugService:
         query = query.order_by(Drug.name)
         
         result = await db.execute(query)
-        return result.scalars().all()
+        return list(result.scalars().all())
     
     @staticmethod
     async def get_drug_with_inventory(
@@ -522,12 +523,18 @@ class DrugService:
         organization_id: uuid.UUID,
         parent_id: Optional[uuid.UUID] = None
     ) -> List[DrugCategory]:
-        """Get category tree structure"""
+        """Get complete category tree from root nodes"""
+        # Get only root categories (parent_id is None)
         query = select(DrugCategory).where(
-            DrugCategory.organization_id == organization_id,
-            DrugCategory.is_deleted == False,
-            DrugCategory.parent_id == parent_id
-        ).order_by(DrugCategory.name)
-        
+        DrugCategory.organization_id == organization_id,
+        DrugCategory.is_deleted == False,
+        DrugCategory.parent_id == parent_id
+    ).options(
+        selectinload(DrugCategory.children)
+        .selectinload(DrugCategory.children)
+        .selectinload(DrugCategory.children)
+        # Add more levels as needed
+    ).order_by(DrugCategory.name)
+    
         result = await db.execute(query)
-        return result.scalars().all()
+        return list(result.scalars().all())

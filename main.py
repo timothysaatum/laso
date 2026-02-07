@@ -6,6 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.openapi.utils import get_openapi
+from pydantic import ValidationError
 from sqlalchemy import text
 
 from app.core.config import get_settings
@@ -232,19 +233,108 @@ async def log_requests_middleware(request: Request, call_next):
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """
     Handle validation errors with detailed error information.
+    Properly serializes all error data including ValueError objects.
     """
     request_id = getattr(request.state, "request_id", "unknown")
     
     logger.warning(
-        f"[{request_id}] Validation error on {request.method} {request.url.path}: {exc.body}"
+        f"[{request_id}] Validation error on {request.method} {request.url.path}"
     )
+    
+    # Convert errors to JSON-serializable format
+    formatted_errors = []
+    for error in exc.errors():
+        # Create a clean error dict with only serializable data
+        clean_error = {
+            "loc": list(error.get("loc", [])),
+            "msg": str(error.get("msg", "")),
+            "type": error.get("type", "validation_error"),
+        }
+        
+        # Safely handle the input field
+        if "input" in error:
+            input_val = error["input"]
+            # Convert complex objects to string representation
+            if hasattr(input_val, '__dict__'):
+                clean_error["input"] = f"<{type(input_val).__name__} object>"
+            else:
+                try:
+                    # Try to convert to JSON-safe format
+                    import json
+                    json.dumps(input_val)  # Test if serializable
+                    clean_error["input"] = input_val
+                except (TypeError, ValueError):
+                    clean_error["input"] = str(input_val)
+        
+        # Safely handle context
+        if "ctx" in error:
+            try:
+                # Convert all context values to strings to avoid serialization errors
+                clean_error["ctx"] = {
+                    k: str(v) for k, v in error["ctx"].items()
+                }
+            except:
+                pass
+        
+        formatted_errors.append(clean_error)
     
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "detail": "Validation error",
-            "errors": exc.errors(),
+            "errors": formatted_errors,
             "request_id": request_id,
+        },
+    )
+
+
+@app.exception_handler(ValidationError)
+async def pydantic_validation_exception_handler(request: Request, exc: ValidationError):
+    """
+    Handle Pydantic ValidationError (from model validation).
+    """
+    request_id = getattr(request.state, "request_id", "unknown")
+    
+    logger.warning(
+        f"[{request_id}] Pydantic validation error on {request.method} {request.url.path}"
+    )
+    
+    # Convert errors to JSON-serializable format
+    formatted_errors = []
+    for error in exc.errors():
+        formatted_errors.append({
+            "loc": list(error.get("loc", [])),
+            "msg": str(error.get("msg", "")),
+            "type": error.get("type", "validation_error"),
+        })
+    
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "detail": "Validation error",
+            "errors": formatted_errors,
+            "request_id": request_id,
+        },
+    )
+
+
+@app.exception_handler(ValueError)
+async def value_error_exception_handler(request: Request, exc: ValueError):
+    """
+    Handle ValueError (e.g., from field validators).
+    """
+    request_id = getattr(request.state, "request_id", "unknown")
+    
+    logger.warning(
+        f"[{request_id}] ValueError on {request.method} {request.url.path}: {str(exc)}"
+    )
+    
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "detail": str(exc),
+            "request_id": request_id,
+            "type": "ValueError"
         },
     )
 

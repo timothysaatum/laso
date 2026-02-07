@@ -1,13 +1,10 @@
 from app.schemas.base_schemas import BaseSchema, SyncSchema, TimestampSchema
 from pydantic import (
-    BaseModel, EmailStr, Field, field_validator, 
-    model_validator, ConfigDict, computed_field
+    EmailStr, Field, ConfigDict
 )
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 from datetime import datetime, date
-from decimal import Decimal
 import uuid
-import re
 
 
 
@@ -59,6 +56,5 @@ class CustomerResponse(CustomerBase, TimestampSchema, SyncSchema):
 
     # Security: Exclude sensitive health information from API responses
     model_config = ConfigDict(
-        from_attributes=True,
-        exclude={'allergies', 'chronic_conditions', 'medical_data_encrypted'}
+        from_attributes=True
     )

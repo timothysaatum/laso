@@ -2,9 +2,9 @@
 Branch Schemas
 Complete schemas for branch/location management
 """
-from pydantic import BaseModel, Field, field_validator, EmailStr, ConfigDict
+from pydantic import Field, field_validator, EmailStr, ConfigDict
 from typing import Optional, List, Dict, Any
-from datetime import datetime, time
+from datetime import datetime
 import uuid
 import re
 
@@ -62,8 +62,8 @@ class WeeklyOperatingHours(BaseSchema):
 class BranchBase(BaseSchema):
     """Base branch fields"""
     name: str = Field(..., min_length=1, max_length=255, description="Branch name")
-    code: str = Field(
-        ..., 
+    code: Optional[str] = Field(
+        None, 
         min_length=2, 
         max_length=50,
         description="Unique branch code (e.g., BR-001, MAIN, DOWNTOWN)"
@@ -98,7 +98,7 @@ class BranchBase(BaseSchema):
 
 class BranchCreate(BranchBase):
     """Schema for creating a branch"""
-    organization_id: uuid.UUID
+    organization_id: Optional[uuid.UUID] = None
 
 
 class BranchUpdate(BaseSchema):
@@ -151,10 +151,10 @@ class BranchListItem(BaseSchema):
     name: str
     code: str
     is_active: bool
-    manager_id: Optional[uuid.UUID]
-    manager_name: Optional[str]
-    phone: Optional[str]
-    email: Optional[str]
+    manager_id: Optional[uuid.UUID] = None
+    manager_name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)
@@ -164,6 +164,12 @@ class BranchAssignment(BaseSchema):
     """Schema for assigning users to branches"""
     user_id: uuid.UUID
     branch_ids: List[uuid.UUID] = Field(..., min_length=1, description="List of branch IDs to assign")
+    
+    @field_validator("branch_ids", mode="after")
+    @classmethod
+    def serialize_uuid_list(cls, values):
+        return [str(v) for v in values]
+
 
 
 class BranchTransferRequest(BaseSchema):

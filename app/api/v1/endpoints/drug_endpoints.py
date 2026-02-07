@@ -119,6 +119,218 @@ async def list_drugs(
     return result
 
 
+# ============================================================================
+# SPECIFIC LITERAL ROUTES - Must come BEFORE parameterized routes like /{drug_id}
+# ============================================================================
+
+# Drug Category Endpoints
+@router.post("/categories", response_model=DrugCategoryResponse, status_code=status.HTTP_201_CREATED)
+async def create_drug_category(
+    category_data: DrugCategoryCreate,
+    current_user: User = Depends(require_permission("manage_drugs")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Create a new drug category
+    
+    **Required Permission**: manage_drugs
+    
+    **Supports**: Hierarchical categories (parent-child relationship)
+    
+    **Returns**: Created category with calculated path and level
+    """
+    if category_data.organization_id != current_user.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot create category for different organization"
+        )
+    
+    category = await DrugService.create_category(db=db, category_data=category_data)
+    return category
+
+
+@router.get("/categories", response_model=List[DrugCategoryResponse])
+async def list_drug_categories(
+    parent_id: Optional[uuid.UUID] = Query(None, description="Filter by parent category"),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List drug categories
+    
+    **Query Parameters**:
+    - parent_id: Optional - Get children of specific parent (null for root categories)
+    
+    **Returns**: List of categories
+    """
+    categories = await DrugService.get_category_tree(
+        db=db,
+        organization_id=current_user.organization_id,
+        parent_id=parent_id
+    )
+    
+    return categories
+
+
+@router.get("/categories/tree", response_model=List[DrugCategoryTree])
+async def get_category_tree(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+    parent_id: Optional[uuid.UUID] = None
+):
+    """
+    Get complete category tree structure
+    
+    **Returns**: Hierarchical tree of all categories with nested children
+    
+    **Use Case**: For displaying category picker with tree structure
+    """
+    # This would require a recursive function to build the tree
+    # For now, return root categories
+    categories = await DrugService.get_category_tree(
+        db=db,
+        organization_id=current_user.organization_id,
+        parent_id=None
+    )
+    
+    return categories
+
+
+@router.post("/bulk-update", status_code=status.HTTP_200_OK)
+async def bulk_update_drugs(
+    bulk_update: BulkDrugUpdate,
+    current_user: User = Depends(require_permission("manage_drugs")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Bulk update multiple drugs
+    
+    **Required Permission**: manage_drugs
+    
+    **Limits**: Maximum 100 drugs per request
+    
+    **Returns**: Count of successful and failed updates
+    
+    **Note**: Partial success possible - some drugs may update while others fail
+    """
+    successful, failed = await DrugService.bulk_update_drugs(
+        db=db,
+        organization_id=current_user.organization_id,
+        bulk_update=bulk_update,
+        updated_by_user_id=current_user.id
+    )
+    
+    return {
+        "successful": successful,
+        "failed": failed,
+        "total": len(bulk_update.drug_ids),
+        "message": f"Updated {successful} drug(s) successfully, {failed} failed"
+    }
+
+
+# Search and Filter Endpoints
+@router.post("/search", response_model=PaginatedResponse[DrugResponse])
+async def search_drugs_advanced(
+    filters: DrugSearchFilters,
+    pagination: PaginationParams = Depends(),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Advanced drug search with complex filters (POST method for complex body)
+    
+    **Request Body**: DrugSearchFilters with multiple filter options
+    
+    **Returns**: Paginated list of matching drugs
+    """
+    drugs = await DrugService.search_drugs(
+        db=db,
+        organization_id=current_user.organization_id,
+        **filters.model_dump(exclude_none=True)
+    )
+    
+    paginator = Paginator(db)
+    result = paginator.paginate_list(
+        items=drugs,
+        params=pagination,
+        schema=DrugResponse
+    )
+    
+    return result
+
+
+@router.get("/by-sku/{sku}", response_model=DrugResponse)
+async def get_drug_by_sku(
+    sku: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get drug by SKU (for barcode scanning)
+    
+    **Use Case**: Point of sale barcode scanning
+    
+    **Returns**: Drug details
+    
+    **Errors**:
+    - 404: Drug not found
+    """
+    drugs = await DrugService.search_drugs(
+        db=db,
+        organization_id=current_user.organization_id,
+        search=sku
+    )
+    
+    # Find exact SKU match
+    drug = next((d for d in drugs if d.sku == sku), None)
+    
+    if not drug:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Drug with SKU '{sku}' not found"
+        )
+    
+    return drug
+
+
+@router.get("/by-barcode/{barcode}", response_model=DrugResponse)
+async def get_drug_by_barcode(
+    barcode: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get drug by barcode (for barcode scanning)
+    
+    **Use Case**: Point of sale barcode scanning
+    
+    **Returns**: Drug details
+    
+    **Errors**:
+    - 404: Drug not found
+    """
+    drugs = await DrugService.search_drugs(
+        db=db,
+        organization_id=current_user.organization_id,
+        search=barcode
+    )
+    
+    # Find exact barcode match
+    drug = next((d for d in drugs if d.barcode == barcode), None)
+    
+    if not drug:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Drug with barcode '{barcode}' not found"
+        )
+    
+    return drug
+
+
+# ============================================================================
+# PARAMETERIZED ROUTES - Must come AFTER all specific literal routes
+# ============================================================================
+
 @router.get("/{drug_id}", response_model=DrugResponse)
 async def get_drug(
     drug_id: uuid.UUID,
@@ -249,208 +461,3 @@ async def delete_drug(
     )
     
     return None
-
-
-@router.post("/bulk-update", status_code=status.HTTP_200_OK)
-async def bulk_update_drugs(
-    bulk_update: BulkDrugUpdate,
-    current_user: User = Depends(require_permission("manage_drugs")),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Bulk update multiple drugs
-    
-    **Required Permission**: manage_drugs
-    
-    **Limits**: Maximum 100 drugs per request
-    
-    **Returns**: Count of successful and failed updates
-    
-    **Note**: Partial success possible - some drugs may update while others fail
-    """
-    successful, failed = await DrugService.bulk_update_drugs(
-        db=db,
-        organization_id=current_user.organization_id,
-        bulk_update=bulk_update,
-        updated_by_user_id=current_user.id
-    )
-    
-    return {
-        "successful": successful,
-        "failed": failed,
-        "total": len(bulk_update.drug_ids),
-        "message": f"Updated {successful} drug(s) successfully, {failed} failed"
-    }
-
-
-# Drug Category Endpoints
-
-@router.post("/categories", response_model=DrugCategoryResponse, status_code=status.HTTP_201_CREATED)
-async def create_drug_category(
-    category_data: DrugCategoryCreate,
-    current_user: User = Depends(require_permission("manage_drugs")),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Create a new drug category
-    
-    **Required Permission**: manage_drugs
-    
-    **Supports**: Hierarchical categories (parent-child relationship)
-    
-    **Returns**: Created category with calculated path and level
-    """
-    if category_data.organization_id != current_user.organization_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot create category for different organization"
-        )
-    
-    category = await DrugService.create_category(db=db, category_data=category_data)
-    return category
-
-
-@router.get("/categories", response_model=List[DrugCategoryResponse])
-async def list_drug_categories(
-    parent_id: Optional[uuid.UUID] = Query(None, description="Filter by parent category"),
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    List drug categories
-    
-    **Query Parameters**:
-    - parent_id: Optional - Get children of specific parent (null for root categories)
-    
-    **Returns**: List of categories
-    """
-    categories = await DrugService.get_category_tree(
-        db=db,
-        organization_id=current_user.organization_id,
-        parent_id=parent_id
-    )
-    
-    return categories
-
-
-@router.get("/categories/tree", response_model=List[DrugCategoryTree])
-async def get_category_tree(
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Get complete category tree structure
-    
-    **Returns**: Hierarchical tree of all categories with nested children
-    
-    **Use Case**: For displaying category picker with tree structure
-    """
-    # This would require a recursive function to build the tree
-    # For now, return root categories
-    categories = await DrugService.get_category_tree(
-        db=db,
-        organization_id=current_user.organization_id,
-        parent_id=None
-    )
-    
-    return categories
-
-
-# Search and Filter Endpoints
-
-@router.post("/search", response_model=PaginatedResponse[DrugResponse])
-async def search_drugs_advanced(
-    filters: DrugSearchFilters,
-    pagination: PaginationParams = Depends(),
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Advanced drug search with complex filters (POST method for complex body)
-    
-    **Request Body**: DrugSearchFilters with multiple filter options
-    
-    **Returns**: Paginated list of matching drugs
-    """
-    drugs = await DrugService.search_drugs(
-        db=db,
-        organization_id=current_user.organization_id,
-        **filters.model_dump(exclude_none=True)
-    )
-    
-    paginator = Paginator(db)
-    result = paginator.paginate_list(
-        items=drugs,
-        params=pagination,
-        schema=DrugResponse
-    )
-    
-    return result
-
-
-@router.get("/by-sku/{sku}", response_model=DrugResponse)
-async def get_drug_by_sku(
-    sku: str,
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Get drug by SKU (for barcode scanning)
-    
-    **Use Case**: Point of sale barcode scanning
-    
-    **Returns**: Drug details
-    
-    **Errors**:
-    - 404: Drug not found
-    """
-    drugs = await DrugService.search_drugs(
-        db=db,
-        organization_id=current_user.organization_id,
-        search=sku
-    )
-    
-    # Find exact SKU match
-    drug = next((d for d in drugs if d.sku == sku), None)
-    
-    if not drug:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Drug with SKU '{sku}' not found"
-        )
-    
-    return drug
-
-
-@router.get("/by-barcode/{barcode}", response_model=DrugResponse)
-async def get_drug_by_barcode(
-    barcode: str,
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Get drug by barcode (for barcode scanning)
-    
-    **Use Case**: Point of sale barcode scanning
-    
-    **Returns**: Drug details
-    
-    **Errors**:
-    - 404: Drug not found
-    """
-    drugs = await DrugService.search_drugs(
-        db=db,
-        organization_id=current_user.organization_id,
-        search=barcode
-    )
-    
-    # Find exact barcode match
-    drug = next((d for d in drugs if d.barcode == barcode), None)
-    
-    if not drug:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Drug with barcode '{barcode}' not found"
-        )
-    
-    return drug
