@@ -19,20 +19,22 @@ class SaleItemBase(BaseSchema):
     """Base sale item fields"""
     drug_id: uuid.UUID
     quantity: int = Field(..., gt=0, description="Quantity sold")
-    unit_price: Money = Field(..., description="Selling price per unit")
-    discount_percentage: Decimal = Field(default=Decimal('0'), ge=0, le=100)
+    # unit_price: Optional[Money] = Field(None, description="Selling price per unit")
+    # discount_percentage: Optional[Decimal] = Field(default=Decimal('0'), ge=0, le=100)
     
-    @computed_field
-    @property
-    def discount_amount(self) -> Decimal:
-        """Calculate discount amount"""
-        return (self.quantity * self.unit_price * self.discount_percentage / 100).quantize(Decimal('0.01'))
+    # @computed_field
+    # @property
+    # def discount_amount(self) -> Decimal:
+    #     """Calculate discount amount"""
+    #     if self.unit_price is not None and self.discount_percentage is not None:
+    #         return (self.quantity * self.unit_price * self.discount_percentage / 100).quantize(Decimal('0.01'))
+    #     return Decimal('0')
 
 
 class SaleItemCreate(SaleItemBase):
     """Schema for creating a sale item"""
     requires_prescription: bool = Field(default=False)
-    tax_rate: Decimal = Field(default=Decimal('0'), ge=0, le=100, description="Tax rate percentage")
+    # tax_rate: Optional[Decimal] = Field(default=Decimal('0'), ge=0, le=100, description="Tax rate percentage")
 
 
 class SaleItemResponse(SaleItemCreate, TimestampSchema):

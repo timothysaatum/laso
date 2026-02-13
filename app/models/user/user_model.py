@@ -8,6 +8,7 @@ from sqlalchemy.orm import (
     Mapped, mapped_column, relationship,
     validates
 )
+from sqlalchemy.ext.hybrid import hybrid_method
 from app.models.core.mixins import pwd_context
 from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime, timezone
@@ -171,18 +172,22 @@ class User(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         # Check role-based permissions
         role_permissions = {
             'super_admin': ['*'],
-            'admin': ['manage_users', 'manage_branches', 'manage_drugs', 
+            'admin': ['manage_users', 'manage_branches', 'manage_drugs', 'manage_suppliers', 'approve_purchase_orders',
                      'manage_inventory', 'process_sales', 'view_reports', 'export_data'],
-            'manager': ['manage_drugs', 'manage_inventory', 'process_sales', 
-                       'view_reports', 'export_data'],
-            'pharmacist': ['view_drugs', 'process_sales', 'view_inventory', 
-                          'manage_prescriptions'],
+            'manager': ['manage_drugs', 'manage_inventory', 'process_sales', 'approve_purchase_orders',
+                       'view_reports', 'export_data', 'manage_suppliers'],
+            'pharmacist': ['view_drugs', 'process_sales', 'view_inventory', 'approve_purchase_orders',
+                          'manage_prescriptions', 'manage_suppliers'],
             'cashier': ['view_drugs', 'process_sales', 'view_inventory'],
             'viewer': ['view_drugs', 'view_inventory', 'view_reports']
         }
         
         user_perms = role_permissions.get(self.role, [])
         return '*' in user_perms or permission in user_perms
+    
+    def has_branch_access(self, branch_id: uuid.UUID) -> bool:
+        """Check if user has access to a branch (instance method)"""
+        return branch_id in self.assigned_branches
 
 
 class UserSession(Base, TimestampMixin):

@@ -8,6 +8,7 @@ from typing import Optional, List, TYPE_CHECKING
 from datetime import date
 import uuid
 from app.models.core.mixins import SoftDeleteMixin, SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
+from app.models.pricing.pricing_model import PriceContract
 
 if TYPE_CHECKING:
     from app.models.precriptions.prescription_model import Prescription
@@ -114,7 +115,50 @@ class Customer(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         default=False,
         nullable=False
     )
-    
+    # In Customer model, add these fields:
+
+# Insurance information (enhanced)
+insurance_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    UUID(as_uuid=True),
+    ForeignKey('insurance_providers.id', ondelete='SET NULL'),
+    nullable=True,
+    index=True,
+    comment="Customer's insurance provider"
+)
+
+insurance_member_id: Mapped[Optional[str]] = mapped_column(
+    String(100),
+    index=True,
+    comment="Member/policy ID with insurance company"
+)
+
+insurance_card_image_url: Mapped[Optional[str]] = mapped_column(
+    Text,
+    comment="Scanned insurance card for verification"
+)
+
+insurance_verified: Mapped[bool] = mapped_column(
+    Boolean,
+    default=False,
+    nullable=False,
+    comment="Whether insurance has been verified"
+)
+
+insurance_verified_at: Mapped[Optional[datetime]] = mapped_column(
+    DateTime(timezone=True)
+)
+
+# Preferred price contract (can override insurance contract)
+preferred_contract_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    UUID(as_uuid=True),
+    ForeignKey('price_contracts.id', ondelete='SET NULL'),
+    nullable=True,
+    comment="Customer's preferred pricing contract (for corporate/staff)"
+)
+
+# Relationships
+insurance_provider: Mapped[Optional["InsuranceProvider"]] = relationship()
+preferred_contract: Mapped[Optional["PriceContract"]] = relationship()
     # Relationships
     sales: Mapped[List["Sale"]] = relationship(back_populates="customer")
     prescriptions: Mapped[List["Prescription"]] = relationship(back_populates="customer")

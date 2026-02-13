@@ -16,6 +16,7 @@ from .endpoints.branch_endpoints import router as branch_router
 from .endpoints.sales_endpoints import router as sales_router
 from .endpoints.purchase_order_endpoints import router as purchase_order_router
 from .endpoints.purchase_order_endpoints import supplier_router as sr
+from .endpoints.stats import router as stats_router
 
 router.include_router(auth_router, tags=["Authentication"])
 router.include_router(org_onboarding_router, tags=["Organization Onboarding"])
@@ -25,5 +26,6 @@ router.include_router(inventory_router, tags=["Inventory Management"])
 router.include_router(sales_router, tags=["Sales"])
 router.include_router(purchase_order_router, tags=["Purchase Orders"])
 router.include_router(sr, tags=["Suppliers"])
+router.include_router(stats_router, tags=["Statistics"])
 
 __all__ = ["router"]

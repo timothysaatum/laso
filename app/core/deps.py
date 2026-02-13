@@ -158,6 +158,15 @@ def require_role(*allowed_roles: str):
     
     return role_checker
 
+def require_any_role(allowed_roles: list[str]):
+    def role_checker(user: User = Depends(get_current_user)):
+        if user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="Operation not permitted"
+            )
+        return user
+    return role_checker
 
 def require_permission(permission: str):
     """

@@ -10,6 +10,7 @@ from datetime import datetime, date
 import uuid
 
 from app.models.core.mixins import SoftDeleteMixin, SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
+from app.models.pricing.pricing_model import PriceContract
 if TYPE_CHECKING:
     from app.models.customer.customer_model import Customer
     from app.models.pharmacy.pharmacy_model import Branch 
@@ -185,6 +186,48 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         default=False,
         nullable=False
     )
+    # In Sale model, add:
+
+price_contract_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    UUID(as_uuid=True),
+    ForeignKey('price_contracts.id', ondelete='SET NULL'),
+    nullable=True,
+    index=True,
+    comment="Price contract applied to this sale"
+)
+
+contract_discount_amount: Mapped[float] = mapped_column(
+    Numeric(10, 2),
+    default=0.00,
+    nullable=False,
+    comment="Total discount from contract pricing"
+)
+
+additional_discount_amount: Mapped[float] = mapped_column(
+    Numeric(10, 2),
+    default=0.00,
+    nullable=False,
+    comment="Additional manual discounts beyond contract"
+)
+
+# Insurance-specific
+insurance_claim_number: Mapped[Optional[str]] = mapped_column(
+    String(100),
+    comment="Insurance claim reference number"
+)
+
+patient_copay_amount: Mapped[Optional[float]] = mapped_column(
+    Numeric(10, 2),
+    comment="Amount patient paid (copay)"
+)
+
+insurance_covered_amount: Mapped[Optional[float]] = mapped_column(
+    Numeric(10, 2),
+    comment="Amount covered by insurance"
+)
+
+# Relationships
+price_contract: Mapped[Optional["PriceContract"]] = relationship()
     
     # Relationships
     branch: Mapped["Branch"] = relationship(back_populates="sales")
@@ -262,7 +305,34 @@ class SaleItem(Base, TimestampMixin):
     )
     
     batch_number: Mapped[Optional[str]] = mapped_column(String(100))
-    
+    # In SaleItem model, add:
+
+base_price: Mapped[float] = mapped_column(
+    Numeric(10, 2),
+    nullable=False,
+    comment="Original drug price (before contract)"
+)
+
+contract_price: Mapped[Optional[float]] = mapped_column(
+    Numeric(10, 2),
+    comment="Price after applying contract discount"
+)
+
+contract_discount_amount: Mapped[float] = mapped_column(
+    Numeric(10, 2),
+    default=0.00,
+    nullable=False,
+    comment="Discount amount from contract"
+)
+
+applied_contract_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    UUID(as_uuid=True),
+    ForeignKey('price_contracts.id', ondelete='SET NULL'),
+    comment="Contract used for pricing this item"
+)
+
+# Relationships
+applied_contract: Mapped[Optional["PriceContract"]] = relationship()
     # Quantity
     quantity: Mapped[int] = mapped_column(
         Integer,

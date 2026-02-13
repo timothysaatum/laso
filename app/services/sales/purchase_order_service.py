@@ -2,6 +2,7 @@
 Purchase Order Service
 Business logic for purchase orders, receiving goods, and supplier management
 """
+from typing import List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
@@ -18,7 +19,7 @@ from app.models.user.user_model import User
 from app.models.system_md.sys_models import AuditLog
 
 from app.schemas.purchase_order_schemas import (
-    SupplierCreate, PurchaseOrderCreate, PurchaseOrderWithDetails,
+    PurchaseOrderItemCreate, SupplierCreate, PurchaseOrderCreate, PurchaseOrderWithDetails,
     ReceivePurchaseOrder, ReceivePurchaseOrderResponse,
     PurchaseOrderItemWithDetails
 )
@@ -77,6 +78,7 @@ class PurchaseOrderService:
         await db.commit()
         await db.refresh(supplier)
         
+        audit_data = supplier_data.model_dump(mode='json')
         # Audit log
         await PurchaseOrderService._create_audit_log(
             db,
@@ -85,7 +87,7 @@ class PurchaseOrderService:
             entity_id=supplier.id,
             user_id=user.id,
             organization_id=supplier.organization_id,
-            changes={'after': supplier_data.model_dump()}
+            changes={'after': audit_data}
         )
         
         return supplier
@@ -155,6 +157,12 @@ class PurchaseOrderService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Branch not found or inactive"
+            )
+        print(f"User assigned branches: {user.assigned_branches}, PO branch: {branch.id}")
+        if str(branch.id) not in user.assigned_branches:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have access to this branch"
             )
         
         # Validate all drugs exist
@@ -462,7 +470,8 @@ class PurchaseOrderService:
             # Get PO with lock
             result = await db.execute(
                 select(PurchaseOrder)
-                .options(selectinload(PurchaseOrder.items))
+                .options(selectinload(PurchaseOrder.items), 
+                         selectinload(PurchaseOrder.supplier))
                 .where(PurchaseOrder.id == po_id)
                 .with_for_update()  # Row-level lock
             )
@@ -745,3 +754,306 @@ class PurchaseOrderService:
         )
         db.add(log)
         await db.commit()
+
+    @staticmethod
+    async def add_purchase_order_items(
+        db: AsyncSession,
+        po_id: uuid.UUID,
+        items_data: List[PurchaseOrderItemCreate],
+        user: User
+    ) -> PurchaseOrder:
+        """
+        Add items to an existing purchase order (must be in draft status)
+        
+        Args:
+            db: Database session
+            po_id: Purchase order ID
+            items_data: List of items to add
+            user: Current user
+        
+        Returns:
+            Updated PurchaseOrder with new items
+        """
+        # Get the purchase order
+        po = await PurchaseOrderService.get_purchase_order(db, po_id)
+        
+        # Verify organization access
+        if po.organization_id != user.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+        
+        # Only allow adding items to draft POs
+        if po.status != 'draft':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot add items to purchase order with status '{po.status}'. Only draft POs can be modified."
+            )
+        
+        # Validate all drugs exist and belong to organization
+        drug_ids = [item.drug_id for item in items_data]
+        result = await db.execute(
+            select(Drug).where(
+                Drug.id.in_(drug_ids),
+                Drug.organization_id == user.organization_id,
+                Drug.is_deleted == False
+            )
+        )
+        drugs = {drug.id: drug for drug in result.scalars().all()}
+        
+        if len(drugs) != len(drug_ids):
+            missing = set(drug_ids) - set(drugs.keys())
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Drugs not found: {missing}"
+            )
+        
+        # Check for duplicate drugs in the PO
+        existing_items_result = await db.execute(
+            select(PurchaseOrderItem).where(
+                PurchaseOrderItem.purchase_order_id == po_id
+            )
+        )
+        existing_drugs = {item.drug_id for item in existing_items_result.scalars().all()}
+        
+        duplicates = set(drug_ids) & existing_drugs
+        if duplicates:
+            duplicate_names = [drugs[drug_id].name for drug_id in duplicates]
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"These drugs already exist in this purchase order: {', '.join(duplicate_names)}. Update the existing items instead."
+            )
+        
+        # Create new items
+        new_items = []
+        for item_data in items_data:
+            item = PurchaseOrderItem(
+                id=uuid.uuid4(),
+                purchase_order_id=po_id,
+                drug_id=item_data.drug_id,
+                quantity_ordered=item_data.quantity_ordered,
+                quantity_received=0,
+                unit_cost=item_data.unit_cost,
+                total_cost=item_data.quantity_ordered * item_data.unit_cost,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc)
+            )
+            new_items.append(item)
+            db.add(item)
+        
+        # Recalculate PO totals
+        all_items_result = await db.execute(
+            select(PurchaseOrderItem).where(
+                PurchaseOrderItem.purchase_order_id == po_id
+            )
+        )
+        all_items = list(all_items_result.scalars().all()) + new_items
+        
+        po.subtotal = sum(item.total_cost for item in all_items)
+        po.tax_amount = po.subtotal * Decimal('0.0')  # Configure tax rate as needed
+        po.total_amount = po.subtotal + po.tax_amount + (po.shipping_cost or Decimal('0'))
+        po.updated_at = datetime.now(timezone.utc)
+        
+        await db.commit()
+        await db.refresh(po)
+        
+        # Audit log
+        await PurchaseOrderService._create_audit_log(
+            db,
+            action='add_po_items',
+            entity_type='PurchaseOrder',
+            entity_id=po.id,
+            user_id=user.id,
+            organization_id=po.organization_id,
+            changes={
+                'items_added': len(new_items),
+                'new_items': [
+                    {
+                        'drug_id': str(item.drug_id),
+                        'drug_name': drugs[item.drug_id].name,
+                        'quantity_ordered': item.quantity_ordered,
+                        'unit_cost': str(item.unit_cost),
+                        'total_cost': str(item.total_cost)
+                    }
+                    for item in new_items
+                ],
+                'old_total': str(po.subtotal - sum(item.total_cost for item in new_items)),
+                'new_total': str(po.total_amount)
+            }
+        )
+        
+        return po
+    
+    @staticmethod
+    async def update_purchase_order_item(
+        db: AsyncSession,
+        po_id: uuid.UUID,
+        item_id: uuid.UUID,
+        quantity_ordered: int,
+        unit_cost: Decimal,
+        user: User
+    ) -> PurchaseOrder:
+        """
+        Update a purchase order item (PO must be in draft status)
+        
+        Args:
+            db: Database session
+            po_id: Purchase order ID
+            item_id: Item ID to update
+            quantity_ordered: New quantity
+            unit_cost: New unit cost
+            user: Current user
+        
+        Returns:
+            Updated PurchaseOrder
+        """
+        # Get the PO
+        po = await PurchaseOrderService.get_purchase_order(db, po_id)
+        
+        # Verify organization access
+        if po.organization_id != user.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+        
+        # Only allow updating draft POs
+        if po.status != 'draft':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot update items in purchase order with status '{po.status}'. Only draft POs can be modified."
+            )
+        
+        # Get the item
+        result = await db.execute(
+            select(PurchaseOrderItem).where(
+                PurchaseOrderItem.id == item_id,
+                PurchaseOrderItem.purchase_order_id == po_id
+            )
+        )
+        item = result.scalar_one_or_none()
+        
+        if not item:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Item not found in this purchase order"
+            )
+        
+        # Store old values for audit
+        old_quantity = item.quantity_ordered
+        old_unit_cost = item.unit_cost
+        old_total = item.total_cost
+        
+        # Update item
+        item.quantity_ordered = quantity_ordered
+        item.unit_cost = unit_cost
+        item.total_cost = quantity_ordered * unit_cost
+        item.updated_at = datetime.now(timezone.utc)
+        
+        # Recalculate PO totals
+        all_items_result = await db.execute(
+            select(PurchaseOrderItem).where(
+                PurchaseOrderItem.purchase_order_id == po_id
+            )
+        )
+        all_items = all_items_result.scalars().all()
+        
+        po.subtotal = sum(i.total_cost for i in all_items)
+        po.tax_amount = po.subtotal * Decimal('0.0')
+        po.total_amount = po.subtotal + po.tax_amount + (po.shipping_cost or Decimal('0'))
+        po.updated_at = datetime.now(timezone.utc)
+        
+        await db.commit()
+        await db.refresh(po)
+        
+        # Audit log
+        await PurchaseOrderService._create_audit_log(
+            db,
+            action='update_po_item',
+            entity_type='PurchaseOrder',
+            entity_id=po.id,
+            user_id=user.id,
+            organization_id=po.organization_id,
+            changes={
+                'item_id': str(item_id),
+                'before': {
+                    'quantity_ordered': old_quantity,
+                    'unit_cost': str(old_unit_cost),
+                    'total_cost': str(old_total)
+                },
+                'after': {
+                    'quantity_ordered': quantity_ordered,
+                    'unit_cost': str(unit_cost),
+                    'total_cost': str(item.total_cost)
+                },
+                'po_total_changed': {
+                    'old': str(po.subtotal - item.total_cost + old_total),
+                    'new': str(po.total_amount)
+                }
+            }
+        )
+        
+        return po
+    
+    @staticmethod
+    async def list_purchase_order_items(
+        db: AsyncSession,
+        po_id: uuid.UUID,
+        user: User
+    ) -> List[PurchaseOrderItemWithDetails]:
+        """
+        List all items in a purchase order with drug details
+        
+        Args:
+            db: Database session
+            po_id: Purchase order ID
+            user: Current user
+        
+        Returns:
+            List of PurchaseOrderItemWithDetails
+        """
+        # Get the PO
+        po = await PurchaseOrderService.get_purchase_order(db, po_id)
+        
+        # Verify organization access
+        if po.organization_id != user.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+        
+        # Get items with drug details
+        result = await db.execute(
+            select(PurchaseOrderItem, Drug).join(
+                Drug, PurchaseOrderItem.drug_id == Drug.id
+            ).where(
+                PurchaseOrderItem.purchase_order_id == po_id
+            ).order_by(Drug.name)
+        )
+        
+        items_with_drugs = result.all()
+        
+        # Build response
+        items_response = []
+        for item, drug in items_with_drugs:
+            items_response.append(
+                PurchaseOrderItemWithDetails(
+                    id=item.id,
+                    purchase_order_id=item.purchase_order_id,
+                    drug_id=item.drug_id,
+                    quantity_ordered=item.quantity_ordered,
+                    quantity_received=item.quantity_received,
+                    unit_cost=item.unit_cost,
+                    total_cost=item.total_cost,
+                    batch_number=item.batch_number,
+                    expiry_date=item.expiry_date,
+                    drug_name=drug.name,
+                    drug_sku=drug.sku,
+                    drug_generic_name=drug.generic_name,
+                    created_at=item.created_at,
+                    updated_at=item.updated_at
+                )
+            )
+        
+        return items_response

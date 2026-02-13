@@ -26,8 +26,8 @@ class OrganizationOnboardingRequest(BaseSchema):
     )
     type: str = Field(
         ...,
-        pattern="^(small_shop|pharmacy|hospital_pharmacy|chain)$",
-        description="Type of organization (must match: small_shop, pharmacy, hospital_pharmacy, chain)"
+        pattern="^(otc|pharmacy|hospital_pharmacy|chain)$",
+        description="Type of organization (must match: otc, pharmacy, hospital_pharmacy, chain)"
     )
     license_number: Optional[str] = Field(
         None,
@@ -151,10 +151,10 @@ class OrganizationOnboardingRequest(BaseSchema):
                 "currency": "GHS",
                 "timezone": "Africa/Accra",
                 "admin": {
-                    "username": "admin_user",
+                    "username": "laso",
                     "email": "admin@healthcareplus.com",
                     "full_name": "John Doe",
-                    "password": "SecureP@ss123",
+                    "password": "SecurePass!123",
                     "phone": "+233501234567",
                     "employee_id": "EMP-ADMIN-001"
                 },

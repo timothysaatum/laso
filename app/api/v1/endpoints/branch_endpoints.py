@@ -15,8 +15,7 @@ from app.core.deps import (
 )
 from app.models.user.user_model import User
 from app.schemas.branch_schemas import (
-    BranchCreate, BranchUpdate, BranchResponse, BranchWithStats,
-    BranchListItem, BranchAssignment, BranchSearchFilters
+    BranchCreate, BranchUpdate, BranchResponse, BranchListItem, BranchAssignment, BranchSearchFilters
 )
 from app.services.branch.branch_service import BranchService
 from app.utils.pagination import Paginator, PaginationParams, PaginatedResponse
@@ -100,7 +99,7 @@ async def list_branches(
     """
     List all branches with pagination and filters
     
-    **Query Parameters**:
+    **Query Paramel",ters**:
     - page: Page number (default: 1)
     - page_size: Items per page (default: 50, max: 500)
     - search: Search in name, code, city
@@ -203,52 +202,6 @@ async def get_branch(
             )
     
     return branch
-
-
-@router.get("/{branch_id}/stats", response_model=BranchWithStats)
-async def get_branch_with_stats(
-    branch_id: uuid.UUID,
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Get branch with comprehensive statistics
-    
-    **Includes**:
-    - Total inventory items
-    - Total inventory value
-    - Low stock count
-    - Today's sales
-    - Month's sales
-    - Active users count
-    
-    **Returns**: Branch with statistics
-    
-    **Use Case**: Branch dashboard, performance monitoring
-    """
-    # Check access
-    if current_user.role not in ['admin', 'super_admin']:
-        if branch_id not in current_user.assigned_branches:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have access to this branch"
-            )
-    
-    stats_data = await BranchService.get_branch_with_stats(
-        db=db,
-        branch_id=branch_id,
-        organization_id=current_user.organization_id
-    )
-    
-    return {
-        **BranchResponse.model_validate(stats_data['branch']).model_dump(),
-        "total_inventory_items": stats_data['total_inventory_items'],
-        "total_inventory_value": stats_data['total_inventory_value'],
-        "low_stock_count": stats_data['low_stock_count'],
-        "total_sales_today": stats_data['total_sales_today'],
-        "total_sales_month": stats_data['total_sales_month'],
-        "active_users_count": stats_data['active_users_count']
-    }
 
 
 @router.get("/code/{code}", response_model=BranchResponse)
@@ -460,11 +413,8 @@ async def get_branch_users(
 ):
     """
     Get all users assigned to a branch
-    
     **Required Permission**: view_reports
-    
     **Returns**: List of users with access to this branch
-    
     **Use Case**: 
     - View staff at a branch
     - Audit user access
@@ -486,15 +436,20 @@ async def get_branch_users(
             detail="Branch not found"
         )
     
-    # Get users assigned to this branch
+    # Get all active users in the organization
     result = await db.execute(
         select(UserModel).where(
             UserModel.organization_id == current_user.organization_id,
-            UserModel.assigned_branches.contains([branch_id]),
             UserModel.is_deleted == False
         ).order_by(UserModel.full_name)
     )
-    users = result.scalars().all()
+    
+    all_users = result.scalars().all()
+    
+    branch_users = [
+        user for user in all_users
+        if user.has_branch_access(branch_id)
+    ]
     
     return [
         {
@@ -505,7 +460,7 @@ async def get_branch_users(
             "role": user.role,
             "is_active": user.is_active
         }
-        for user in users
+        for user in branch_users
     ]
 
 

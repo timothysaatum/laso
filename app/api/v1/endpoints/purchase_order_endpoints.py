@@ -2,16 +2,17 @@
 Purchase Order API Routes
 FastAPI endpoints for purchase orders and supplier management
 """
+from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
+from typing import List, Optional
 import uuid
 
 from app.core.deps import get_current_user, get_organization_id, require_permission
 from app.db.dependencies import get_db
 from app.models.user.user_model import User
 from app.schemas.purchase_order_schemas import (
-    SupplierCreate, SupplierResponse,
+    PurchaseOrderItemCreate, PurchaseOrderItemWithDetails, SupplierCreate, SupplierResponse,
     PurchaseOrderCreate, PurchaseOrderResponse, PurchaseOrderWithDetails,
     PurchaseOrderApprove, PurchaseOrderReject, ReceivePurchaseOrder, ReceivePurchaseOrderResponse
 )
@@ -118,7 +119,7 @@ async def list_suppliers(
     query = query.order_by(Supplier.name)
     
     paginator = Paginator(db)
-    return await paginator.paginate(query, pagination, SupplierResponse)
+    return await paginator.paginate(query, params=pagination, schema=SupplierResponse)
 
 
 # ============================================
@@ -231,7 +232,7 @@ async def list_purchase_orders(
     query = query.order_by(PurchaseOrder.created_at.desc())
     
     paginator = Paginator(db)
-    return await paginator.paginate(query, pagination, PurchaseOrderResponse)
+    return await paginator.paginate(query, params=pagination, schema=PurchaseOrderResponse)
 
 
 # ============================================
@@ -343,3 +344,152 @@ async def receive_goods(
     ```
     """
     return await PurchaseOrderService.receive_goods(db, po_id, receive_data, current_user)
+
+
+@router.post(
+    "/{po_id}/items",
+    response_model=PurchaseOrderWithDetails,
+    dependencies=[Depends(require_permission("manage_inventory"))]
+)
+async def add_purchase_order_items(
+    po_id: uuid.UUID,
+    items: List[PurchaseOrderItemCreate],
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Add items to an existing purchase order
+    
+    **Permissions:** manage_inventory
+    
+    **Requirements:**
+    - Purchase order must be in `draft` status
+    - Cannot add duplicate drugs (drug already exists in PO)
+    - All drugs must exist and belong to the organization
+    
+    **Request Body:**
+    ```json
+    [
+      {
+        "drug_id": "123e4567-e89b-12d3-a456-426614174000",
+        "quantity_ordered": 50,
+        "unit_cost": 12.50
+      },
+      {
+        "drug_id": "123e4567-e89b-12d3-a456-426614174001",
+        "quantity_ordered": 100,
+        "unit_cost": 8.75
+      }
+    ]
+    ```
+    
+    **Response:** Returns the updated purchase order with all items including the newly added ones
+    
+    **Use Cases:**
+    - Add forgotten items to a draft PO
+    - Bulk add items to an existing order
+    - Build a PO incrementally
+    """
+    # Validate at least one item
+    if not items or len(items) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must provide at least one item to add"
+        )
+    
+    # Add items to the PO
+    po = await PurchaseOrderService.add_purchase_order_items(
+        db, po_id, items, current_user
+    )
+    
+    # Return full PO details with all items
+    return await PurchaseOrderService._build_po_with_details(db, po)
+
+
+@router.patch(
+    "/{po_id}/items/{item_id}",
+    response_model=PurchaseOrderWithDetails,
+    dependencies=[Depends(require_permission("manage_inventory"))]
+)
+async def update_purchase_order_item(
+    po_id: uuid.UUID,
+    item_id: uuid.UUID,
+    quantity_ordered: int = Query(..., gt=0, description="New quantity"),
+    unit_cost: Decimal = Query(..., gt=0, description="New unit cost"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Update a single item in a draft purchase order
+    
+    **Permissions:** manage_inventory
+    
+    **Requirements:**
+    - Purchase order must be in `draft` status
+    - Item must belong to this PO
+    
+    **Query Parameters:**
+    - quantity_ordered: New quantity (must be > 0)
+    - unit_cost: New unit cost (must be > 0)
+    
+    **Example:**
+    ```
+    PATCH /api/purchase-orders/{po_id}/items/{item_id}?quantity_ordered=75&unit_cost=11.25
+    ```
+    
+    **Use Cases:**
+    - Correct wrong quantities
+    - Update pricing
+    - Adjust order amounts
+    """
+    # Update the item
+    po = await PurchaseOrderService.update_purchase_order_item(
+        db, po_id, item_id, quantity_ordered, unit_cost, current_user
+    )
+    
+    # Return full PO details with all items
+    return await PurchaseOrderService._build_po_with_details(db, po)
+
+
+@router.get(
+    "/{po_id}/items",
+    response_model=List[PurchaseOrderItemWithDetails]
+)
+async def list_purchase_order_items(
+    po_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    List all items in a purchase order with drug details
+    
+    **Returns:** List of items with drug information (name, SKU, generic name)
+    
+    **Use Cases:**
+    - View all items in a PO
+    - Check item details
+    - Verify quantities and costs
+    
+    **Response Example:**
+    ```json
+    [
+      {
+        "id": "uuid",
+        "purchase_order_id": "uuid",
+        "drug_id": "uuid",
+        "drug_name": "Paracetamol 500mg",
+        "drug_sku": "PAR-500",
+        "drug_generic_name": "Paracetamol",
+        "quantity_ordered": 100,
+        "quantity_received": 0,
+        "unit_cost": 5.50,
+        "total_cost": 550.00,
+        "batch_number": null,
+        "expiry_date": null,
+        "created_at": "2026-02-12T10:30:00Z",
+        "updated_at": "2026-02-12T10:30:00Z"
+      }
+    ]
+    ```
+    """
+    return await PurchaseOrderService.list_purchase_order_items(db, po_id, current_user)

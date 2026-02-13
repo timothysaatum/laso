@@ -21,7 +21,7 @@ from app.schemas.inventory_schemas import (
     StockTransferCreate, StockTransferResponse,
     LowStockReport, ExpiringBatchReport, InventoryValuationResponse
 )
-from app.utils.pagination import Paginator, PaginationParams, PaginatedResponse
+from app.utils.pagination import PaginationParams, PaginatedResponse
 
 
 router = APIRouter(prefix="/inventory", tags=["Inventory Management"])
@@ -58,7 +58,7 @@ async def get_branch_inventory(
     **Performance**: Uses pagination to handle large inventories efficiently
     """
     # Check if user has access to this branch
-    if branch_id not in current_user.assigned_branches:
+    if str(branch_id) not in current_user.assigned_branches:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You don't have access to this branch"

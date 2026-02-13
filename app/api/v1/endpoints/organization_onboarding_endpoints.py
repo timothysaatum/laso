@@ -12,6 +12,7 @@ import uuid
 from app.db.dependencies import get_db
 from app.core.deps import (
     get_current_user,
+    require_any_role,
     require_role
 )
 from app.models.user.user_model import User
@@ -132,8 +133,8 @@ async def onboard_organization(
     "",
     response_model=PaginatedResponse[OrganizationResponse],
     summary="List all organizations",
-    description="Get paginated list of all organizations. **Requires super_admin role**",
-    dependencies=[Depends(require_role("super_admin"))]
+    description="Get paginated list of all organizations. **Requires super_admin or admin role**",
+    dependencies=[Depends(require_role("super_admin", "admin"))]
 )
 async def list_organizations(
     pagination: PaginationParams = Depends(),
