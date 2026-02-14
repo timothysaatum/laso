@@ -1,8 +1,8 @@
-"""create tables
+"""update tables
 
-Revision ID: 3991ee797916
+Revision ID: dcd1c8e4fa3a
 Revises: 
-Create Date: 2026-01-28 05:57:10.164997
+Create Date: 2026-02-14 04:07:24.259191
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 import app
 
 # revision identifiers, used by Alembic.
-revision: str = '3991ee797916'
+revision: str = 'dcd1c8e4fa3a'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -40,7 +40,7 @@ def upgrade() -> None:
     sa.Column('last_synced_at', sa.DateTime(timezone=True), nullable=True, comment='Last successful sync with server'),
     sa.Column('sync_hash', sa.String(length=64), nullable=True, comment='SHA256 hash for detecting changes'),
     sa.CheckConstraint("subscription_tier IN ('basic', 'professional', 'enterprise')", name='check_subscription_tier'),
-    sa.CheckConstraint("type IN ('small_shop', 'pharmacy', 'hospital_pharmacy', 'chain')", name='check_org_type'),
+    sa.CheckConstraint("type IN ('otc', 'pharmacy', 'hospital_pharmacy', 'chain')", name='check_org_type'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('license_number')
     )
@@ -198,56 +198,6 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f('ix_branches_sync_status'), ['sync_status'], unique=False)
         batch_op.create_index(batch_op.f('ix_branches_updated_at'), ['updated_at'], unique=False)
 
-    op.create_table('customers',
-    sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
-    sa.Column('organization_id', app.models.db_types.UUID(length=36), nullable=False),
-    sa.Column('customer_type', sa.String(length=50), nullable=False, comment='walk_in, registered, insurance, corporate'),
-    sa.Column('first_name', sa.String(length=255), nullable=True),
-    sa.Column('last_name', sa.String(length=255), nullable=True),
-    sa.Column('phone', sa.String(length=20), nullable=True),
-    sa.Column('email', sa.String(length=255), nullable=True),
-    sa.Column('date_of_birth', sa.Date(), nullable=True),
-    sa.Column('address', app.models.db_types.JSONB(), nullable=True, comment='{ street, city, state, zip, country }'),
-    sa.Column('insurance_provider', sa.String(length=255), nullable=True),
-    sa.Column('insurance_number', sa.String(length=100), nullable=True),
-    sa.Column('insurance_expiry', sa.Date(), nullable=True),
-    sa.Column('allergies', app.models.db_types.ARRAY(), nullable=False, comment='Known drug allergies'),
-    sa.Column('chronic_conditions', app.models.db_types.ARRAY(), nullable=False, comment='Chronic medical conditions'),
-    sa.Column('medical_data_encrypted', sa.Boolean(), nullable=False, comment='Whether PHI is encrypted'),
-    sa.Column('loyalty_points', sa.Integer(), nullable=False),
-    sa.Column('loyalty_tier', sa.String(length=50), nullable=False, comment='bronze, silver, gold, platinum'),
-    sa.Column('preferred_contact_method', sa.String(length=20), nullable=False, comment='email, phone, sms'),
-    sa.Column('marketing_consent', sa.Boolean(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
-    sa.Column('sync_version', sa.BigInteger(), nullable=False, comment='Incremented on each update for conflict detection'),
-    sa.Column('sync_status', sa.String(length=20), nullable=False, comment='synced, pending, conflict, deleted'),
-    sa.Column('last_synced_at', sa.DateTime(timezone=True), nullable=True, comment='Last successful sync with server'),
-    sa.Column('sync_hash', sa.String(length=64), nullable=True, comment='SHA256 hash for detecting changes'),
-    sa.Column('is_deleted', sa.Boolean(), nullable=False),
-    sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('deleted_by', app.models.db_types.UUID(length=36), nullable=True),
-    sa.CheckConstraint("customer_type IN ('walk_in', 'registered', 'insurance', 'corporate')", name='check_customer_type'),
-    sa.CheckConstraint("loyalty_tier IN ('bronze', 'silver', 'gold', 'platinum')", name='check_loyalty_tier'),
-    sa.ForeignKeyConstraint(['deleted_by'], ['users.id'], ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['organization_id'], ['organizations.id'], ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id')
-    )
-    with op.batch_alter_table('customers', schema=None) as batch_op:
-        batch_op.create_index('idx_customer_email', ['email'], unique=False)
-        batch_op.create_index('idx_customer_loyalty', ['loyalty_points', 'loyalty_tier'], unique=False)
-        batch_op.create_index('idx_customer_org', ['organization_id'], unique=False)
-        batch_op.create_index('idx_customer_phone', ['phone'], unique=False)
-        batch_op.create_index('idx_customer_type', ['customer_type'], unique=False)
-        batch_op.create_index(batch_op.f('ix_customers_created_at'), ['created_at'], unique=False)
-        batch_op.create_index(batch_op.f('ix_customers_customer_type'), ['customer_type'], unique=False)
-        batch_op.create_index(batch_op.f('ix_customers_email'), ['email'], unique=False)
-        batch_op.create_index(batch_op.f('ix_customers_is_deleted'), ['is_deleted'], unique=False)
-        batch_op.create_index(batch_op.f('ix_customers_organization_id'), ['organization_id'], unique=False)
-        batch_op.create_index(batch_op.f('ix_customers_phone'), ['phone'], unique=False)
-        batch_op.create_index(batch_op.f('ix_customers_sync_status'), ['sync_status'], unique=False)
-        batch_op.create_index(batch_op.f('ix_customers_updated_at'), ['updated_at'], unique=False)
-
     op.create_table('drug_categories',
     sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
     sa.Column('organization_id', app.models.db_types.UUID(length=36), nullable=False),
@@ -280,6 +230,51 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f('ix_drug_categories_parent_id'), ['parent_id'], unique=False)
         batch_op.create_index(batch_op.f('ix_drug_categories_sync_status'), ['sync_status'], unique=False)
         batch_op.create_index(batch_op.f('ix_drug_categories_updated_at'), ['updated_at'], unique=False)
+
+    op.create_table('insurance_providers',
+    sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('organization_id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('name', sa.String(length=255), nullable=False, comment='Insurance company name: GLICO, SIC, Enterprise, etc.'),
+    sa.Column('code', sa.String(length=50), nullable=False, comment='Short code: GLICO, SIC, ENT'),
+    sa.Column('logo_url', sa.Text(), nullable=True, comment='URL to insurance company logo'),
+    sa.Column('phone', sa.String(length=20), nullable=True),
+    sa.Column('email', sa.String(length=255), nullable=True),
+    sa.Column('website', sa.String(length=255), nullable=True),
+    sa.Column('address', app.models.db_types.JSONB(), nullable=True, comment='Insurance company address'),
+    sa.Column('primary_contact_name', sa.String(length=255), nullable=True),
+    sa.Column('primary_contact_phone', sa.String(length=20), nullable=True),
+    sa.Column('primary_contact_email', sa.String(length=255), nullable=True),
+    sa.Column('billing_cycle', sa.String(length=50), nullable=False, comment='daily, weekly, monthly, quarterly'),
+    sa.Column('payment_terms', sa.String(length=50), nullable=False, comment='NET15, NET30, NET60, etc.'),
+    sa.Column('requires_card_verification', sa.Boolean(), nullable=False, comment='Require insurance card scan/verification'),
+    sa.Column('requires_preauth', sa.Boolean(), nullable=False, comment='Require pre-authorization for claims'),
+    sa.Column('verification_endpoint', sa.Text(), nullable=True, comment='API endpoint for real-time eligibility verification'),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('sync_version', sa.BigInteger(), nullable=False, comment='Incremented on each update for conflict detection'),
+    sa.Column('sync_status', sa.String(length=20), nullable=False, comment='synced, pending, conflict, deleted'),
+    sa.Column('last_synced_at', sa.DateTime(timezone=True), nullable=True, comment='Last successful sync with server'),
+    sa.Column('sync_hash', sa.String(length=64), nullable=True, comment='SHA256 hash for detecting changes'),
+    sa.Column('is_deleted', sa.Boolean(), nullable=False),
+    sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('deleted_by', app.models.db_types.UUID(length=36), nullable=True),
+    sa.CheckConstraint("billing_cycle IN ('daily', 'weekly', 'monthly', 'quarterly', 'annually')", name='check_billing_cycle'),
+    sa.ForeignKeyConstraint(['deleted_by'], ['users.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['organization_id'], ['organizations.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('insurance_providers', schema=None) as batch_op:
+        batch_op.create_index('idx_insurance_active', ['is_active'], unique=False)
+        batch_op.create_index('idx_insurance_code', ['code'], unique=False)
+        batch_op.create_index('idx_insurance_org', ['organization_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_insurance_providers_code'), ['code'], unique=True)
+        batch_op.create_index(batch_op.f('ix_insurance_providers_created_at'), ['created_at'], unique=False)
+        batch_op.create_index(batch_op.f('ix_insurance_providers_is_active'), ['is_active'], unique=False)
+        batch_op.create_index(batch_op.f('ix_insurance_providers_is_deleted'), ['is_deleted'], unique=False)
+        batch_op.create_index(batch_op.f('ix_insurance_providers_organization_id'), ['organization_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_insurance_providers_sync_status'), ['sync_status'], unique=False)
+        batch_op.create_index(batch_op.f('ix_insurance_providers_updated_at'), ['updated_at'], unique=False)
 
     op.create_table('suppliers',
     sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
@@ -428,56 +423,85 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f('ix_drugs_unit_price'), ['unit_price'], unique=False)
         batch_op.create_index(batch_op.f('ix_drugs_updated_at'), ['updated_at'], unique=False)
 
-    op.create_table('prescriptions',
+    op.create_table('price_contracts',
     sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
     sa.Column('organization_id', app.models.db_types.UUID(length=36), nullable=False),
-    sa.Column('prescription_number', sa.String(length=100), nullable=False),
-    sa.Column('customer_id', app.models.db_types.UUID(length=36), nullable=False),
-    sa.Column('prescriber_name', sa.String(length=255), nullable=False),
-    sa.Column('prescriber_license', sa.String(length=100), nullable=False),
-    sa.Column('prescriber_phone', sa.String(length=20), nullable=True),
-    sa.Column('prescriber_address', sa.Text(), nullable=True),
-    sa.Column('issue_date', sa.Date(), nullable=False),
-    sa.Column('expiry_date', sa.Date(), nullable=False),
-    sa.Column('medications', app.models.db_types.JSONB(), nullable=False, comment='Array of { drug_id, drug_name, dosage, frequency, duration, quantity }'),
-    sa.Column('diagnosis', sa.Text(), nullable=True),
-    sa.Column('notes', sa.Text(), nullable=True),
-    sa.Column('special_instructions', sa.Text(), nullable=True),
-    sa.Column('refills_allowed', sa.Integer(), nullable=False),
-    sa.Column('refills_remaining', sa.Integer(), nullable=False),
-    sa.Column('last_refill_date', sa.Date(), nullable=True),
-    sa.Column('status', sa.String(length=50), nullable=False, comment='active, filled, expired, cancelled'),
-    sa.Column('verified_by', app.models.db_types.UUID(length=36), nullable=True, comment='Pharmacist who verified prescription'),
-    sa.Column('verified_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('contract_code', sa.String(length=50), nullable=False, comment='Unique code: GLICO-STD, SIC-PREM, STAFF-20, STANDARD'),
+    sa.Column('contract_name', sa.String(length=255), nullable=False, comment="Display name: 'GLICO Insurance Standard Plan'"),
+    sa.Column('description', sa.Text(), nullable=True, comment='Contract terms and conditions'),
+    sa.Column('contract_type', sa.String(length=50), nullable=False, comment='insurance, corporate, staff, senior_citizen, standard, wholesale'),
+    sa.Column('is_default_contract', sa.Boolean(), nullable=False, comment="TRUE for 'Standard Pricing' contract used as fallback"),
+    sa.Column('discount_type', sa.String(length=50), nullable=False, comment='percentage, fixed_amount, custom'),
+    sa.Column('discount_percentage', sa.Numeric(precision=5, scale=2), nullable=False, comment='Discount percentage: 5.00, 10.00, 15.00, 20.00'),
+    sa.Column('applies_to_prescription_only', sa.Boolean(), nullable=False, comment='If TRUE, contract only applies to prescription drugs'),
+    sa.Column('applies_to_otc', sa.Boolean(), nullable=False, comment='If TRUE, contract applies to over-the-counter drugs'),
+    sa.Column('excluded_drug_categories', app.models.db_types.ARRAY(), nullable=False, comment='Categories excluded from this contract (e.g., controlled substances)'),
+    sa.Column('excluded_drug_ids', app.models.db_types.ARRAY(), nullable=False, comment='Specific drugs excluded from contract'),
+    sa.Column('minimum_price_override', sa.Numeric(precision=10, scale=2), nullable=True, comment='Never go below this price even with discount'),
+    sa.Column('maximum_discount_amount', sa.Numeric(precision=10, scale=2), nullable=True, comment='Cap the discount amount per item'),
+    sa.Column('applies_to_all_branches', sa.Boolean(), nullable=False, comment='If FALSE, only specific branches can use this contract'),
+    sa.Column('applicable_branch_ids', app.models.db_types.ARRAY(), nullable=False, comment='Specific branches where this contract is valid'),
+    sa.Column('effective_from', sa.Date(), nullable=False, comment='Contract start date'),
+    sa.Column('effective_to', sa.Date(), nullable=True, comment='Contract end date (NULL = no expiry)'),
+    sa.Column('requires_verification', sa.Boolean(), nullable=False, comment='Require verification (e.g., insurance card scan) before applying'),
+    sa.Column('requires_approval', sa.Boolean(), nullable=False, comment='Require manager approval during checkout'),
+    sa.Column('allowed_user_roles', app.models.db_types.ARRAY(), nullable=False, comment="User roles allowed to apply this contract: ['pharmacist', 'cashier', 'manager']"),
+    sa.Column('insurance_provider_id', app.models.db_types.UUID(length=36), nullable=True, comment="Link to insurance provider if contract_type = 'insurance'"),
+    sa.Column('copay_amount', sa.Numeric(precision=10, scale=2), nullable=True, comment='Fixed copay amount patient must pay'),
+    sa.Column('copay_percentage', sa.Numeric(precision=5, scale=2), nullable=True, comment='Percentage of price patient must pay'),
+    sa.Column('created_by', app.models.db_types.UUID(length=36), nullable=False, comment='User who created the contract'),
+    sa.Column('approved_by', app.models.db_types.UUID(length=36), nullable=True, comment='Manager who approved the contract'),
+    sa.Column('approved_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('status', sa.String(length=50), nullable=False, comment='draft, active, suspended, expired, cancelled'),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('total_transactions', sa.Integer(), nullable=False, comment='Total sales using this contract'),
+    sa.Column('total_discount_given', sa.Numeric(precision=12, scale=2), nullable=False, comment='Total discount amount given under this contract'),
+    sa.Column('last_used_at', sa.DateTime(timezone=True), nullable=True, comment='Last time this contract was used'),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
     sa.Column('sync_version', sa.BigInteger(), nullable=False, comment='Incremented on each update for conflict detection'),
     sa.Column('sync_status', sa.String(length=20), nullable=False, comment='synced, pending, conflict, deleted'),
     sa.Column('last_synced_at', sa.DateTime(timezone=True), nullable=True, comment='Last successful sync with server'),
     sa.Column('sync_hash', sa.String(length=64), nullable=True, comment='SHA256 hash for detecting changes'),
-    sa.CheckConstraint("status IN ('active', 'filled', 'expired', 'cancelled')", name='check_prescription_status'),
-    sa.CheckConstraint('refills_remaining <= refills_allowed', name='check_refills_valid'),
-    sa.CheckConstraint('refills_remaining >= 0', name='check_refills_remaining'),
-    sa.ForeignKeyConstraint(['customer_id'], ['customers.id'], ondelete='RESTRICT'),
+    sa.Column('is_deleted', sa.Boolean(), nullable=False),
+    sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('deleted_by', app.models.db_types.UUID(length=36), nullable=True),
+    sa.CheckConstraint("contract_type IN ('insurance', 'corporate', 'staff', 'senior_citizen', 'standard', 'wholesale', 'government')", name='check_contract_type'),
+    sa.CheckConstraint("discount_type IN ('percentage', 'fixed_amount', 'custom')", name='check_discount_type'),
+    sa.CheckConstraint("status IN ('draft', 'active', 'suspended', 'expired', 'cancelled')", name='check_contract_status'),
+    sa.CheckConstraint('discount_percentage >= 0 AND discount_percentage <= 100', name='check_discount_percentage_range'),
+    sa.CheckConstraint('effective_to IS NULL OR effective_to >= effective_from', name='check_contract_dates'),
+    sa.ForeignKeyConstraint(['approved_by'], ['users.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['created_by'], ['users.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['deleted_by'], ['users.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['insurance_provider_id'], ['insurance_providers.id'], ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['organization_id'], ['organizations.id'], ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['verified_by'], ['users.id'], ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('organization_id', 'contract_code', name='uq_org_contract_code')
     )
-    with op.batch_alter_table('prescriptions', schema=None) as batch_op:
-        batch_op.create_index('idx_prescription_customer', ['customer_id'], unique=False)
-        batch_op.create_index('idx_prescription_expiry', ['expiry_date'], unique=False)
-        batch_op.create_index('idx_prescription_issue_date', ['issue_date'], unique=False)
-        batch_op.create_index('idx_prescription_org', ['organization_id'], unique=False)
-        batch_op.create_index('idx_prescription_status', ['status'], unique=False)
-        batch_op.create_index(batch_op.f('ix_prescriptions_created_at'), ['created_at'], unique=False)
-        batch_op.create_index(batch_op.f('ix_prescriptions_customer_id'), ['customer_id'], unique=False)
-        batch_op.create_index(batch_op.f('ix_prescriptions_expiry_date'), ['expiry_date'], unique=False)
-        batch_op.create_index(batch_op.f('ix_prescriptions_issue_date'), ['issue_date'], unique=False)
-        batch_op.create_index(batch_op.f('ix_prescriptions_organization_id'), ['organization_id'], unique=False)
-        batch_op.create_index(batch_op.f('ix_prescriptions_prescription_number'), ['prescription_number'], unique=True)
-        batch_op.create_index(batch_op.f('ix_prescriptions_status'), ['status'], unique=False)
-        batch_op.create_index(batch_op.f('ix_prescriptions_sync_status'), ['sync_status'], unique=False)
-        batch_op.create_index(batch_op.f('ix_prescriptions_updated_at'), ['updated_at'], unique=False)
+    with op.batch_alter_table('price_contracts', schema=None) as batch_op:
+        batch_op.create_index('idx_contract_active_dates', ['organization_id', 'is_active', 'status', 'effective_from', 'effective_to'], unique=False, postgresql_where="is_active = TRUE AND status = 'active'")
+        batch_op.create_index('idx_contract_code', ['contract_code'], unique=False)
+        batch_op.create_index('idx_contract_dates', ['effective_from', 'effective_to'], unique=False)
+        batch_op.create_index('idx_contract_default_unique', ['organization_id', 'is_default_contract'], unique=True, postgresql_where='is_default_contract = TRUE')
+        batch_op.create_index('idx_contract_insurance', ['insurance_provider_id'], unique=False)
+        batch_op.create_index('idx_contract_org', ['organization_id'], unique=False)
+        batch_op.create_index('idx_contract_status', ['status', 'is_active'], unique=False)
+        batch_op.create_index('idx_contract_type', ['contract_type'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_applies_to_all_branches'), ['applies_to_all_branches'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_contract_code'), ['contract_code'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_contract_type'), ['contract_type'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_created_at'), ['created_at'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_effective_from'), ['effective_from'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_effective_to'), ['effective_to'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_insurance_provider_id'), ['insurance_provider_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_is_active'), ['is_active'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_is_default_contract'), ['is_default_contract'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_is_deleted'), ['is_deleted'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_organization_id'), ['organization_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_status'), ['status'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_sync_status'), ['sync_status'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contracts_updated_at'), ['updated_at'], unique=False)
 
     op.create_table('purchase_orders',
     sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
@@ -558,6 +582,64 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f('ix_branch_inventory_sync_status'), ['sync_status'], unique=False)
         batch_op.create_index(batch_op.f('ix_branch_inventory_updated_at'), ['updated_at'], unique=False)
 
+    op.create_table('customers',
+    sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('organization_id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('customer_type', sa.String(length=50), nullable=False, comment='walk_in, registered, insurance, corporate'),
+    sa.Column('first_name', sa.String(length=255), nullable=True),
+    sa.Column('last_name', sa.String(length=255), nullable=True),
+    sa.Column('phone', sa.String(length=20), nullable=True),
+    sa.Column('email', sa.String(length=255), nullable=True),
+    sa.Column('date_of_birth', sa.Date(), nullable=True),
+    sa.Column('address', app.models.db_types.JSONB(), nullable=True, comment='{ street, city, state, zip, country }'),
+    sa.Column('allergies', app.models.db_types.ARRAY(), nullable=False, comment='Known drug allergies'),
+    sa.Column('chronic_conditions', app.models.db_types.ARRAY(), nullable=False, comment='Chronic medical conditions'),
+    sa.Column('medical_data_encrypted', sa.Boolean(), nullable=False, comment='Whether PHI is encrypted'),
+    sa.Column('loyalty_points', sa.Integer(), nullable=False),
+    sa.Column('loyalty_tier', sa.String(length=50), nullable=False, comment='bronze, silver, gold, platinum'),
+    sa.Column('preferred_contact_method', sa.String(length=20), nullable=False, comment='email, phone, sms'),
+    sa.Column('marketing_consent', sa.Boolean(), nullable=False),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('insurance_provider_id', app.models.db_types.UUID(length=36), nullable=True, comment="Customer's insurance provider"),
+    sa.Column('insurance_member_id', sa.String(length=100), nullable=True, comment='Member/policy ID with insurance company'),
+    sa.Column('insurance_card_image_url', sa.Text(), nullable=True, comment='Scanned insurance card for verification'),
+    sa.Column('insurance_verified', sa.Boolean(), nullable=False, comment='Whether insurance has been verified'),
+    sa.Column('insurance_verified_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('preferred_contract_id', app.models.db_types.UUID(length=36), nullable=True, comment="Customer's preferred pricing contract (for corporate/staff)"),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('sync_version', sa.BigInteger(), nullable=False, comment='Incremented on each update for conflict detection'),
+    sa.Column('sync_status', sa.String(length=20), nullable=False, comment='synced, pending, conflict, deleted'),
+    sa.Column('last_synced_at', sa.DateTime(timezone=True), nullable=True, comment='Last successful sync with server'),
+    sa.Column('sync_hash', sa.String(length=64), nullable=True, comment='SHA256 hash for detecting changes'),
+    sa.Column('is_deleted', sa.Boolean(), nullable=False),
+    sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('deleted_by', app.models.db_types.UUID(length=36), nullable=True),
+    sa.CheckConstraint("customer_type IN ('walk_in', 'registered', 'insurance', 'corporate')", name='check_customer_type'),
+    sa.CheckConstraint("loyalty_tier IN ('bronze', 'silver', 'gold', 'platinum')", name='check_loyalty_tier'),
+    sa.ForeignKeyConstraint(['deleted_by'], ['users.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['insurance_provider_id'], ['insurance_providers.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['organization_id'], ['organizations.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['preferred_contract_id'], ['price_contracts.id'], ondelete='SET NULL'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('customers', schema=None) as batch_op:
+        batch_op.create_index('idx_customer_email', ['email'], unique=False)
+        batch_op.create_index('idx_customer_loyalty', ['loyalty_points', 'loyalty_tier'], unique=False)
+        batch_op.create_index('idx_customer_org', ['organization_id'], unique=False)
+        batch_op.create_index('idx_customer_phone', ['phone'], unique=False)
+        batch_op.create_index('idx_customer_type', ['customer_type'], unique=False)
+        batch_op.create_index(batch_op.f('ix_customers_created_at'), ['created_at'], unique=False)
+        batch_op.create_index(batch_op.f('ix_customers_customer_type'), ['customer_type'], unique=False)
+        batch_op.create_index(batch_op.f('ix_customers_email'), ['email'], unique=False)
+        batch_op.create_index(batch_op.f('ix_customers_insurance_member_id'), ['insurance_member_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_customers_insurance_provider_id'), ['insurance_provider_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_customers_is_deleted'), ['is_deleted'], unique=False)
+        batch_op.create_index(batch_op.f('ix_customers_organization_id'), ['organization_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_customers_phone'), ['phone'], unique=False)
+        batch_op.create_index(batch_op.f('ix_customers_sync_status'), ['sync_status'], unique=False)
+        batch_op.create_index(batch_op.f('ix_customers_updated_at'), ['updated_at'], unique=False)
+
     op.create_table('drug_batches',
     sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
     sa.Column('branch_id', app.models.db_types.UUID(length=36), nullable=False),
@@ -599,6 +681,30 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f('ix_drug_batches_sync_status'), ['sync_status'], unique=False)
         batch_op.create_index(batch_op.f('ix_drug_batches_updated_at'), ['updated_at'], unique=False)
 
+    op.create_table('price_contract_items',
+    sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('contract_id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('drug_id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('override_discount_percentage', sa.Numeric(precision=5, scale=2), nullable=True, comment="Override the contract's default discount for this drug"),
+    sa.Column('fixed_price', sa.Numeric(precision=10, scale=2), nullable=True, comment='Set a fixed price for this drug (ignores base price and discount)'),
+    sa.Column('is_excluded', sa.Boolean(), nullable=False, comment='Exclude this drug from contract (0% discount)'),
+    sa.Column('notes', sa.Text(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.CheckConstraint('override_discount_percentage IS NULL OR (override_discount_percentage >= 0 AND override_discount_percentage <= 100)', name='check_override_discount'),
+    sa.ForeignKeyConstraint(['contract_id'], ['price_contracts.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['drug_id'], ['drugs.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('contract_id', 'drug_id', name='uq_contract_drug')
+    )
+    with op.batch_alter_table('price_contract_items', schema=None) as batch_op:
+        batch_op.create_index('idx_contract_item_contract', ['contract_id'], unique=False)
+        batch_op.create_index('idx_contract_item_drug', ['drug_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contract_items_contract_id'), ['contract_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contract_items_created_at'), ['created_at'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contract_items_drug_id'), ['drug_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_price_contract_items_updated_at'), ['updated_at'], unique=False)
+
     op.create_table('purchase_order_items',
     sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
     sa.Column('purchase_order_id', app.models.db_types.UUID(length=36), nullable=False),
@@ -624,83 +730,6 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f('ix_purchase_order_items_created_at'), ['created_at'], unique=False)
         batch_op.create_index(batch_op.f('ix_purchase_order_items_purchase_order_id'), ['purchase_order_id'], unique=False)
         batch_op.create_index(batch_op.f('ix_purchase_order_items_updated_at'), ['updated_at'], unique=False)
-
-    op.create_table('sales',
-    sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
-    sa.Column('organization_id', app.models.db_types.UUID(length=36), nullable=False),
-    sa.Column('branch_id', app.models.db_types.UUID(length=36), nullable=False),
-    sa.Column('sale_number', sa.String(length=50), nullable=False, comment='Human-readable sale number like BR001-20260112-0001'),
-    sa.Column('customer_id', app.models.db_types.UUID(length=36), nullable=True),
-    sa.Column('customer_name', sa.String(length=255), nullable=True, comment='For walk-in customers without registration'),
-    sa.Column('subtotal', sa.Numeric(precision=10, scale=2), nullable=False, comment='Sum of all items before discount and tax'),
-    sa.Column('discount_amount', sa.Numeric(precision=10, scale=2), nullable=False, comment='Total discount applied'),
-    sa.Column('tax_amount', sa.Numeric(precision=10, scale=2), nullable=False, comment='Total tax charged'),
-    sa.Column('total_amount', sa.Numeric(precision=10, scale=2), nullable=False, comment='Final amount to be paid'),
-    sa.Column('payment_method', sa.String(length=50), nullable=False, comment='cash, card, mobile_money, insurance, credit'),
-    sa.Column('payment_status', sa.String(length=50), nullable=False, comment='pending, completed, partial, refunded, cancelled'),
-    sa.Column('amount_paid', sa.Numeric(precision=10, scale=2), nullable=True, comment='Actual amount paid by customer'),
-    sa.Column('change_amount', sa.Numeric(precision=10, scale=2), nullable=True, comment='Change given to customer'),
-    sa.Column('payment_reference', sa.String(length=255), nullable=True, comment='Transaction ID from payment gateway'),
-    sa.Column('prescription_id', app.models.db_types.UUID(length=36), nullable=True),
-    sa.Column('prescription_number', sa.String(length=100), nullable=True),
-    sa.Column('prescriber_name', sa.String(length=255), nullable=True),
-    sa.Column('prescriber_license', sa.String(length=100), nullable=True),
-    sa.Column('cashier_id', app.models.db_types.UUID(length=36), nullable=False, comment='User who processed the sale'),
-    sa.Column('pharmacist_id', app.models.db_types.UUID(length=36), nullable=True, comment='Pharmacist who verified prescription'),
-    sa.Column('notes', sa.Text(), nullable=True),
-    sa.Column('status', sa.String(length=50), nullable=False, comment='draft, completed, cancelled, refunded'),
-    sa.Column('cancelled_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('cancelled_by', app.models.db_types.UUID(length=36), nullable=True),
-    sa.Column('cancellation_reason', sa.Text(), nullable=True),
-    sa.Column('refund_amount', sa.Numeric(precision=10, scale=2), nullable=True),
-    sa.Column('refunded_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('receipt_printed', sa.Boolean(), nullable=False),
-    sa.Column('receipt_emailed', sa.Boolean(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
-    sa.Column('sync_version', sa.BigInteger(), nullable=False, comment='Incremented on each update for conflict detection'),
-    sa.Column('sync_status', sa.String(length=20), nullable=False, comment='synced, pending, conflict, deleted'),
-    sa.Column('last_synced_at', sa.DateTime(timezone=True), nullable=True, comment='Last successful sync with server'),
-    sa.Column('sync_hash', sa.String(length=64), nullable=True, comment='SHA256 hash for detecting changes'),
-    sa.CheckConstraint("payment_method IN ('cash', 'card', 'mobile_money', 'insurance', 'credit', 'split')", name='check_payment_method'),
-    sa.CheckConstraint("payment_status IN ('pending', 'completed', 'partial', 'refunded', 'cancelled')", name='check_payment_status'),
-    sa.CheckConstraint("status IN ('draft', 'completed', 'cancelled', 'refunded')", name='check_sale_status'),
-    sa.CheckConstraint('discount_amount >= 0', name='check_discount'),
-    sa.CheckConstraint('subtotal >= 0', name='check_subtotal'),
-    sa.CheckConstraint('total_amount >= 0', name='check_total_amount'),
-    sa.ForeignKeyConstraint(['branch_id'], ['branches.id'], ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['cancelled_by'], ['users.id'], ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['cashier_id'], ['users.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['customer_id'], ['customers.id'], ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['organization_id'], ['organizations.id'], ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['pharmacist_id'], ['users.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['prescription_id'], ['prescriptions.id'], ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id')
-    )
-    with op.batch_alter_table('sales', schema=None) as batch_op:
-        batch_op.create_index('idx_sale_branch', ['branch_id'], unique=False)
-        batch_op.create_index('idx_sale_branch_date', ['branch_id', 'created_at'], unique=False)
-        batch_op.create_index('idx_sale_cashier', ['cashier_id'], unique=False)
-        batch_op.create_index('idx_sale_customer', ['customer_id'], unique=False)
-        batch_op.create_index('idx_sale_date', ['created_at'], unique=False)
-        batch_op.create_index('idx_sale_number', ['sale_number'], unique=False)
-        batch_op.create_index('idx_sale_org', ['organization_id'], unique=False)
-        batch_op.create_index('idx_sale_org_date', ['organization_id', 'created_at'], unique=False)
-        batch_op.create_index('idx_sale_status', ['status'], unique=False)
-        batch_op.create_index('idx_sale_status_date', ['status', 'created_at'], unique=False)
-        batch_op.create_index('idx_sale_sync', ['sync_status', 'sync_version'], unique=False)
-        batch_op.create_index(batch_op.f('ix_sales_branch_id'), ['branch_id'], unique=False)
-        batch_op.create_index(batch_op.f('ix_sales_cashier_id'), ['cashier_id'], unique=False)
-        batch_op.create_index(batch_op.f('ix_sales_created_at'), ['created_at'], unique=False)
-        batch_op.create_index(batch_op.f('ix_sales_customer_id'), ['customer_id'], unique=False)
-        batch_op.create_index(batch_op.f('ix_sales_organization_id'), ['organization_id'], unique=False)
-        batch_op.create_index(batch_op.f('ix_sales_payment_method'), ['payment_method'], unique=False)
-        batch_op.create_index(batch_op.f('ix_sales_payment_status'), ['payment_status'], unique=False)
-        batch_op.create_index(batch_op.f('ix_sales_sale_number'), ['sale_number'], unique=True)
-        batch_op.create_index(batch_op.f('ix_sales_status'), ['status'], unique=False)
-        batch_op.create_index(batch_op.f('ix_sales_sync_status'), ['sync_status'], unique=False)
-        batch_op.create_index(batch_op.f('ix_sales_total_amount'), ['total_amount'], unique=False)
-        batch_op.create_index(batch_op.f('ix_sales_updated_at'), ['updated_at'], unique=False)
 
     op.create_table('stock_adjustments',
     sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
@@ -774,12 +803,152 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f('ix_system_alerts_severity'), ['severity'], unique=False)
         batch_op.create_index(batch_op.f('ix_system_alerts_updated_at'), ['updated_at'], unique=False)
 
+    op.create_table('prescriptions',
+    sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('organization_id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('prescription_number', sa.String(length=100), nullable=False),
+    sa.Column('customer_id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('prescriber_name', sa.String(length=255), nullable=False),
+    sa.Column('prescriber_license', sa.String(length=100), nullable=False),
+    sa.Column('prescriber_phone', sa.String(length=20), nullable=True),
+    sa.Column('prescriber_address', sa.Text(), nullable=True),
+    sa.Column('issue_date', sa.Date(), nullable=False),
+    sa.Column('expiry_date', sa.Date(), nullable=False),
+    sa.Column('medications', app.models.db_types.JSONB(), nullable=False, comment='Array of { drug_id, drug_name, dosage, frequency, duration, quantity }'),
+    sa.Column('diagnosis', sa.Text(), nullable=True),
+    sa.Column('notes', sa.Text(), nullable=True),
+    sa.Column('special_instructions', sa.Text(), nullable=True),
+    sa.Column('refills_allowed', sa.Integer(), nullable=False),
+    sa.Column('refills_remaining', sa.Integer(), nullable=False),
+    sa.Column('last_refill_date', sa.Date(), nullable=True),
+    sa.Column('status', sa.String(length=50), nullable=False, comment='active, filled, expired, cancelled'),
+    sa.Column('verified_by', app.models.db_types.UUID(length=36), nullable=True, comment='Pharmacist who verified prescription'),
+    sa.Column('verified_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('sync_version', sa.BigInteger(), nullable=False, comment='Incremented on each update for conflict detection'),
+    sa.Column('sync_status', sa.String(length=20), nullable=False, comment='synced, pending, conflict, deleted'),
+    sa.Column('last_synced_at', sa.DateTime(timezone=True), nullable=True, comment='Last successful sync with server'),
+    sa.Column('sync_hash', sa.String(length=64), nullable=True, comment='SHA256 hash for detecting changes'),
+    sa.CheckConstraint("status IN ('active', 'filled', 'expired', 'cancelled')", name='check_prescription_status'),
+    sa.CheckConstraint('refills_remaining <= refills_allowed', name='check_refills_valid'),
+    sa.CheckConstraint('refills_remaining >= 0', name='check_refills_remaining'),
+    sa.ForeignKeyConstraint(['customer_id'], ['customers.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['organization_id'], ['organizations.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['verified_by'], ['users.id'], ondelete='SET NULL'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('prescriptions', schema=None) as batch_op:
+        batch_op.create_index('idx_prescription_customer', ['customer_id'], unique=False)
+        batch_op.create_index('idx_prescription_expiry', ['expiry_date'], unique=False)
+        batch_op.create_index('idx_prescription_issue_date', ['issue_date'], unique=False)
+        batch_op.create_index('idx_prescription_org', ['organization_id'], unique=False)
+        batch_op.create_index('idx_prescription_status', ['status'], unique=False)
+        batch_op.create_index(batch_op.f('ix_prescriptions_created_at'), ['created_at'], unique=False)
+        batch_op.create_index(batch_op.f('ix_prescriptions_customer_id'), ['customer_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_prescriptions_expiry_date'), ['expiry_date'], unique=False)
+        batch_op.create_index(batch_op.f('ix_prescriptions_issue_date'), ['issue_date'], unique=False)
+        batch_op.create_index(batch_op.f('ix_prescriptions_organization_id'), ['organization_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_prescriptions_prescription_number'), ['prescription_number'], unique=True)
+        batch_op.create_index(batch_op.f('ix_prescriptions_status'), ['status'], unique=False)
+        batch_op.create_index(batch_op.f('ix_prescriptions_sync_status'), ['sync_status'], unique=False)
+        batch_op.create_index(batch_op.f('ix_prescriptions_updated_at'), ['updated_at'], unique=False)
+
+    op.create_table('sales',
+    sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('organization_id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('branch_id', app.models.db_types.UUID(length=36), nullable=False),
+    sa.Column('sale_number', sa.String(length=50), nullable=False, comment='Human-readable sale number like BR001-20260112-0001'),
+    sa.Column('customer_id', app.models.db_types.UUID(length=36), nullable=True),
+    sa.Column('customer_name', sa.String(length=255), nullable=True, comment='For walk-in customers without registration'),
+    sa.Column('subtotal', sa.Numeric(precision=10, scale=2), nullable=False, comment='Sum of all items before discount and tax'),
+    sa.Column('discount_amount', sa.Numeric(precision=10, scale=2), nullable=False, comment='Total discount applied'),
+    sa.Column('tax_amount', sa.Numeric(precision=10, scale=2), nullable=False, comment='Total tax charged'),
+    sa.Column('total_amount', sa.Numeric(precision=10, scale=2), nullable=False, comment='Final amount to be paid'),
+    sa.Column('payment_method', sa.String(length=50), nullable=False, comment='cash, card, mobile_money, insurance, credit'),
+    sa.Column('payment_status', sa.String(length=50), nullable=False, comment='pending, completed, partial, refunded, cancelled'),
+    sa.Column('amount_paid', sa.Numeric(precision=10, scale=2), nullable=True, comment='Actual amount paid by customer'),
+    sa.Column('change_amount', sa.Numeric(precision=10, scale=2), nullable=True, comment='Change given to customer'),
+    sa.Column('payment_reference', sa.String(length=255), nullable=True, comment='Transaction ID from payment gateway'),
+    sa.Column('prescription_id', app.models.db_types.UUID(length=36), nullable=True),
+    sa.Column('prescription_number', sa.String(length=100), nullable=True),
+    sa.Column('prescriber_name', sa.String(length=255), nullable=True),
+    sa.Column('prescriber_license', sa.String(length=100), nullable=True),
+    sa.Column('cashier_id', app.models.db_types.UUID(length=36), nullable=False, comment='User who processed the sale'),
+    sa.Column('pharmacist_id', app.models.db_types.UUID(length=36), nullable=True, comment='Pharmacist who verified prescription'),
+    sa.Column('notes', sa.Text(), nullable=True),
+    sa.Column('status', sa.String(length=50), nullable=False, comment='draft, completed, cancelled, refunded'),
+    sa.Column('cancelled_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('cancelled_by', app.models.db_types.UUID(length=36), nullable=True),
+    sa.Column('cancellation_reason', sa.Text(), nullable=True),
+    sa.Column('refund_amount', sa.Numeric(precision=10, scale=2), nullable=True),
+    sa.Column('refunded_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('receipt_printed', sa.Boolean(), nullable=False),
+    sa.Column('receipt_emailed', sa.Boolean(), nullable=False),
+    sa.Column('price_contract_id', app.models.db_types.UUID(length=36), nullable=True, comment='Price contract applied to this sale'),
+    sa.Column('contract_discount_amount', sa.Numeric(precision=10, scale=2), nullable=False, comment='Total discount from contract pricing'),
+    sa.Column('additional_discount_amount', sa.Numeric(precision=10, scale=2), nullable=False, comment='Additional manual discounts beyond contract'),
+    sa.Column('insurance_claim_number', sa.String(length=100), nullable=True, comment='Insurance claim reference number'),
+    sa.Column('patient_copay_amount', sa.Numeric(precision=10, scale=2), nullable=True, comment='Amount patient paid (copay)'),
+    sa.Column('insurance_covered_amount', sa.Numeric(precision=10, scale=2), nullable=True, comment='Amount covered by insurance'),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('sync_version', sa.BigInteger(), nullable=False, comment='Incremented on each update for conflict detection'),
+    sa.Column('sync_status', sa.String(length=20), nullable=False, comment='synced, pending, conflict, deleted'),
+    sa.Column('last_synced_at', sa.DateTime(timezone=True), nullable=True, comment='Last successful sync with server'),
+    sa.Column('sync_hash', sa.String(length=64), nullable=True, comment='SHA256 hash for detecting changes'),
+    sa.CheckConstraint("payment_method IN ('cash', 'card', 'mobile_money', 'insurance', 'credit', 'split')", name='check_payment_method'),
+    sa.CheckConstraint("payment_status IN ('pending', 'completed', 'partial', 'refunded', 'cancelled')", name='check_payment_status'),
+    sa.CheckConstraint("status IN ('draft', 'completed', 'cancelled', 'refunded')", name='check_sale_status'),
+    sa.CheckConstraint('discount_amount >= 0', name='check_discount'),
+    sa.CheckConstraint('subtotal >= 0', name='check_subtotal'),
+    sa.CheckConstraint('total_amount >= 0', name='check_total_amount'),
+    sa.ForeignKeyConstraint(['branch_id'], ['branches.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['cancelled_by'], ['users.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['cashier_id'], ['users.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['customer_id'], ['customers.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['organization_id'], ['organizations.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['pharmacist_id'], ['users.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['prescription_id'], ['prescriptions.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['price_contract_id'], ['price_contracts.id'], ondelete='SET NULL'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('sales', schema=None) as batch_op:
+        batch_op.create_index('idx_sale_branch', ['branch_id'], unique=False)
+        batch_op.create_index('idx_sale_branch_date', ['branch_id', 'created_at'], unique=False)
+        batch_op.create_index('idx_sale_cashier', ['cashier_id'], unique=False)
+        batch_op.create_index('idx_sale_customer', ['customer_id'], unique=False)
+        batch_op.create_index('idx_sale_date', ['created_at'], unique=False)
+        batch_op.create_index('idx_sale_number', ['sale_number'], unique=False)
+        batch_op.create_index('idx_sale_org', ['organization_id'], unique=False)
+        batch_op.create_index('idx_sale_org_date', ['organization_id', 'created_at'], unique=False)
+        batch_op.create_index('idx_sale_status', ['status'], unique=False)
+        batch_op.create_index('idx_sale_status_date', ['status', 'created_at'], unique=False)
+        batch_op.create_index('idx_sale_sync', ['sync_status', 'sync_version'], unique=False)
+        batch_op.create_index(batch_op.f('ix_sales_branch_id'), ['branch_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_sales_cashier_id'), ['cashier_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_sales_created_at'), ['created_at'], unique=False)
+        batch_op.create_index(batch_op.f('ix_sales_customer_id'), ['customer_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_sales_organization_id'), ['organization_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_sales_payment_method'), ['payment_method'], unique=False)
+        batch_op.create_index(batch_op.f('ix_sales_payment_status'), ['payment_status'], unique=False)
+        batch_op.create_index(batch_op.f('ix_sales_price_contract_id'), ['price_contract_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_sales_sale_number'), ['sale_number'], unique=True)
+        batch_op.create_index(batch_op.f('ix_sales_status'), ['status'], unique=False)
+        batch_op.create_index(batch_op.f('ix_sales_sync_status'), ['sync_status'], unique=False)
+        batch_op.create_index(batch_op.f('ix_sales_total_amount'), ['total_amount'], unique=False)
+        batch_op.create_index(batch_op.f('ix_sales_updated_at'), ['updated_at'], unique=False)
+
     op.create_table('sale_items',
     sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
     sa.Column('sale_id', app.models.db_types.UUID(length=36), nullable=False),
     sa.Column('drug_id', app.models.db_types.UUID(length=36), nullable=False),
     sa.Column('drug_name', sa.String(length=255), nullable=False, comment='Drug name at time of sale'),
     sa.Column('batch_number', sa.String(length=100), nullable=True),
+    sa.Column('base_price', sa.Numeric(precision=10, scale=2), nullable=False, comment='Original drug price (before contract)'),
+    sa.Column('contract_price', sa.Numeric(precision=10, scale=2), nullable=True, comment='Price after applying contract discount'),
+    sa.Column('contract_discount_amount', sa.Numeric(precision=10, scale=2), nullable=False, comment='Discount amount from contract'),
+    sa.Column('applied_contract_id', app.models.db_types.UUID(length=36), nullable=True, comment='Contract used for pricing this item'),
     sa.Column('quantity', sa.Integer(), nullable=False, comment='Number of units sold'),
     sa.Column('unit_of_measure', sa.String(length=50), nullable=False),
     sa.Column('unit_price', sa.Numeric(precision=10, scale=2), nullable=False, comment='Price per unit at time of sale'),
@@ -796,6 +965,7 @@ def upgrade() -> None:
     sa.CheckConstraint('quantity > 0', name='check_sale_item_quantity'),
     sa.CheckConstraint('total_price >= 0', name='check_sale_item_total'),
     sa.CheckConstraint('unit_price >= 0', name='check_sale_item_price'),
+    sa.ForeignKeyConstraint(['applied_contract_id'], ['price_contracts.id'], ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['drug_id'], ['drugs.id'], ondelete='RESTRICT'),
     sa.ForeignKeyConstraint(['sale_id'], ['sales.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
@@ -824,6 +994,50 @@ def downgrade() -> None:
         batch_op.drop_index('idx_sale_item_date')
 
     op.drop_table('sale_items')
+    with op.batch_alter_table('sales', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_sales_updated_at'))
+        batch_op.drop_index(batch_op.f('ix_sales_total_amount'))
+        batch_op.drop_index(batch_op.f('ix_sales_sync_status'))
+        batch_op.drop_index(batch_op.f('ix_sales_status'))
+        batch_op.drop_index(batch_op.f('ix_sales_sale_number'))
+        batch_op.drop_index(batch_op.f('ix_sales_price_contract_id'))
+        batch_op.drop_index(batch_op.f('ix_sales_payment_status'))
+        batch_op.drop_index(batch_op.f('ix_sales_payment_method'))
+        batch_op.drop_index(batch_op.f('ix_sales_organization_id'))
+        batch_op.drop_index(batch_op.f('ix_sales_customer_id'))
+        batch_op.drop_index(batch_op.f('ix_sales_created_at'))
+        batch_op.drop_index(batch_op.f('ix_sales_cashier_id'))
+        batch_op.drop_index(batch_op.f('ix_sales_branch_id'))
+        batch_op.drop_index('idx_sale_sync')
+        batch_op.drop_index('idx_sale_status_date')
+        batch_op.drop_index('idx_sale_status')
+        batch_op.drop_index('idx_sale_org_date')
+        batch_op.drop_index('idx_sale_org')
+        batch_op.drop_index('idx_sale_number')
+        batch_op.drop_index('idx_sale_date')
+        batch_op.drop_index('idx_sale_customer')
+        batch_op.drop_index('idx_sale_cashier')
+        batch_op.drop_index('idx_sale_branch_date')
+        batch_op.drop_index('idx_sale_branch')
+
+    op.drop_table('sales')
+    with op.batch_alter_table('prescriptions', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_prescriptions_updated_at'))
+        batch_op.drop_index(batch_op.f('ix_prescriptions_sync_status'))
+        batch_op.drop_index(batch_op.f('ix_prescriptions_status'))
+        batch_op.drop_index(batch_op.f('ix_prescriptions_prescription_number'))
+        batch_op.drop_index(batch_op.f('ix_prescriptions_organization_id'))
+        batch_op.drop_index(batch_op.f('ix_prescriptions_issue_date'))
+        batch_op.drop_index(batch_op.f('ix_prescriptions_expiry_date'))
+        batch_op.drop_index(batch_op.f('ix_prescriptions_customer_id'))
+        batch_op.drop_index(batch_op.f('ix_prescriptions_created_at'))
+        batch_op.drop_index('idx_prescription_status')
+        batch_op.drop_index('idx_prescription_org')
+        batch_op.drop_index('idx_prescription_issue_date')
+        batch_op.drop_index('idx_prescription_expiry')
+        batch_op.drop_index('idx_prescription_customer')
+
+    op.drop_table('prescriptions')
     with op.batch_alter_table('system_alerts', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_system_alerts_updated_at'))
         batch_op.drop_index(batch_op.f('ix_system_alerts_severity'))
@@ -853,32 +1067,6 @@ def downgrade() -> None:
         batch_op.drop_index('idx_adjustment_branch')
 
     op.drop_table('stock_adjustments')
-    with op.batch_alter_table('sales', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_sales_updated_at'))
-        batch_op.drop_index(batch_op.f('ix_sales_total_amount'))
-        batch_op.drop_index(batch_op.f('ix_sales_sync_status'))
-        batch_op.drop_index(batch_op.f('ix_sales_status'))
-        batch_op.drop_index(batch_op.f('ix_sales_sale_number'))
-        batch_op.drop_index(batch_op.f('ix_sales_payment_status'))
-        batch_op.drop_index(batch_op.f('ix_sales_payment_method'))
-        batch_op.drop_index(batch_op.f('ix_sales_organization_id'))
-        batch_op.drop_index(batch_op.f('ix_sales_customer_id'))
-        batch_op.drop_index(batch_op.f('ix_sales_created_at'))
-        batch_op.drop_index(batch_op.f('ix_sales_cashier_id'))
-        batch_op.drop_index(batch_op.f('ix_sales_branch_id'))
-        batch_op.drop_index('idx_sale_sync')
-        batch_op.drop_index('idx_sale_status_date')
-        batch_op.drop_index('idx_sale_status')
-        batch_op.drop_index('idx_sale_org_date')
-        batch_op.drop_index('idx_sale_org')
-        batch_op.drop_index('idx_sale_number')
-        batch_op.drop_index('idx_sale_date')
-        batch_op.drop_index('idx_sale_customer')
-        batch_op.drop_index('idx_sale_cashier')
-        batch_op.drop_index('idx_sale_branch_date')
-        batch_op.drop_index('idx_sale_branch')
-
-    op.drop_table('sales')
     with op.batch_alter_table('purchase_order_items', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_purchase_order_items_updated_at'))
         batch_op.drop_index(batch_op.f('ix_purchase_order_items_purchase_order_id'))
@@ -887,6 +1075,15 @@ def downgrade() -> None:
         batch_op.drop_index('idx_po_item_drug')
 
     op.drop_table('purchase_order_items')
+    with op.batch_alter_table('price_contract_items', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_price_contract_items_updated_at'))
+        batch_op.drop_index(batch_op.f('ix_price_contract_items_drug_id'))
+        batch_op.drop_index(batch_op.f('ix_price_contract_items_created_at'))
+        batch_op.drop_index(batch_op.f('ix_price_contract_items_contract_id'))
+        batch_op.drop_index('idx_contract_item_drug')
+        batch_op.drop_index('idx_contract_item_contract')
+
+    op.drop_table('price_contract_items')
     with op.batch_alter_table('drug_batches', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_drug_batches_updated_at'))
         batch_op.drop_index(batch_op.f('ix_drug_batches_sync_status'))
@@ -902,6 +1099,24 @@ def downgrade() -> None:
         batch_op.drop_index('idx_batch_branch')
 
     op.drop_table('drug_batches')
+    with op.batch_alter_table('customers', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_customers_updated_at'))
+        batch_op.drop_index(batch_op.f('ix_customers_sync_status'))
+        batch_op.drop_index(batch_op.f('ix_customers_phone'))
+        batch_op.drop_index(batch_op.f('ix_customers_organization_id'))
+        batch_op.drop_index(batch_op.f('ix_customers_is_deleted'))
+        batch_op.drop_index(batch_op.f('ix_customers_insurance_provider_id'))
+        batch_op.drop_index(batch_op.f('ix_customers_insurance_member_id'))
+        batch_op.drop_index(batch_op.f('ix_customers_email'))
+        batch_op.drop_index(batch_op.f('ix_customers_customer_type'))
+        batch_op.drop_index(batch_op.f('ix_customers_created_at'))
+        batch_op.drop_index('idx_customer_type')
+        batch_op.drop_index('idx_customer_phone')
+        batch_op.drop_index('idx_customer_org')
+        batch_op.drop_index('idx_customer_loyalty')
+        batch_op.drop_index('idx_customer_email')
+
+    op.drop_table('customers')
     with op.batch_alter_table('branch_inventory', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_branch_inventory_updated_at'))
         batch_op.drop_index(batch_op.f('ix_branch_inventory_sync_status'))
@@ -931,23 +1146,31 @@ def downgrade() -> None:
         batch_op.drop_index('idx_po_branch')
 
     op.drop_table('purchase_orders')
-    with op.batch_alter_table('prescriptions', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_prescriptions_updated_at'))
-        batch_op.drop_index(batch_op.f('ix_prescriptions_sync_status'))
-        batch_op.drop_index(batch_op.f('ix_prescriptions_status'))
-        batch_op.drop_index(batch_op.f('ix_prescriptions_prescription_number'))
-        batch_op.drop_index(batch_op.f('ix_prescriptions_organization_id'))
-        batch_op.drop_index(batch_op.f('ix_prescriptions_issue_date'))
-        batch_op.drop_index(batch_op.f('ix_prescriptions_expiry_date'))
-        batch_op.drop_index(batch_op.f('ix_prescriptions_customer_id'))
-        batch_op.drop_index(batch_op.f('ix_prescriptions_created_at'))
-        batch_op.drop_index('idx_prescription_status')
-        batch_op.drop_index('idx_prescription_org')
-        batch_op.drop_index('idx_prescription_issue_date')
-        batch_op.drop_index('idx_prescription_expiry')
-        batch_op.drop_index('idx_prescription_customer')
+    with op.batch_alter_table('price_contracts', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_price_contracts_updated_at'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_sync_status'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_status'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_organization_id'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_is_deleted'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_is_default_contract'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_is_active'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_insurance_provider_id'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_effective_to'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_effective_from'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_created_at'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_contract_type'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_contract_code'))
+        batch_op.drop_index(batch_op.f('ix_price_contracts_applies_to_all_branches'))
+        batch_op.drop_index('idx_contract_type')
+        batch_op.drop_index('idx_contract_status')
+        batch_op.drop_index('idx_contract_org')
+        batch_op.drop_index('idx_contract_insurance')
+        batch_op.drop_index('idx_contract_default_unique', postgresql_where='is_default_contract = TRUE')
+        batch_op.drop_index('idx_contract_dates')
+        batch_op.drop_index('idx_contract_code')
+        batch_op.drop_index('idx_contract_active_dates', postgresql_where="is_active = TRUE AND status = 'active'")
 
-    op.drop_table('prescriptions')
+    op.drop_table('price_contracts')
     with op.batch_alter_table('drugs', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_drugs_updated_at'))
         batch_op.drop_index(batch_op.f('ix_drugs_unit_price'))
@@ -1003,6 +1226,19 @@ def downgrade() -> None:
         batch_op.drop_index('idx_supplier_active')
 
     op.drop_table('suppliers')
+    with op.batch_alter_table('insurance_providers', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_insurance_providers_updated_at'))
+        batch_op.drop_index(batch_op.f('ix_insurance_providers_sync_status'))
+        batch_op.drop_index(batch_op.f('ix_insurance_providers_organization_id'))
+        batch_op.drop_index(batch_op.f('ix_insurance_providers_is_deleted'))
+        batch_op.drop_index(batch_op.f('ix_insurance_providers_is_active'))
+        batch_op.drop_index(batch_op.f('ix_insurance_providers_created_at'))
+        batch_op.drop_index(batch_op.f('ix_insurance_providers_code'))
+        batch_op.drop_index('idx_insurance_org')
+        batch_op.drop_index('idx_insurance_code')
+        batch_op.drop_index('idx_insurance_active')
+
+    op.drop_table('insurance_providers')
     with op.batch_alter_table('drug_categories', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_drug_categories_updated_at'))
         batch_op.drop_index(batch_op.f('ix_drug_categories_sync_status'))
@@ -1015,22 +1251,6 @@ def downgrade() -> None:
         batch_op.drop_index('idx_category_org')
 
     op.drop_table('drug_categories')
-    with op.batch_alter_table('customers', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_customers_updated_at'))
-        batch_op.drop_index(batch_op.f('ix_customers_sync_status'))
-        batch_op.drop_index(batch_op.f('ix_customers_phone'))
-        batch_op.drop_index(batch_op.f('ix_customers_organization_id'))
-        batch_op.drop_index(batch_op.f('ix_customers_is_deleted'))
-        batch_op.drop_index(batch_op.f('ix_customers_email'))
-        batch_op.drop_index(batch_op.f('ix_customers_customer_type'))
-        batch_op.drop_index(batch_op.f('ix_customers_created_at'))
-        batch_op.drop_index('idx_customer_type')
-        batch_op.drop_index('idx_customer_phone')
-        batch_op.drop_index('idx_customer_org')
-        batch_op.drop_index('idx_customer_loyalty')
-        batch_op.drop_index('idx_customer_email')
-
-    op.drop_table('customers')
     with op.batch_alter_table('branches', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_branches_updated_at'))
         batch_op.drop_index(batch_op.f('ix_branches_sync_status'))

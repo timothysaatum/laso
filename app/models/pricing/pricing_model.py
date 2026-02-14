@@ -283,15 +283,6 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         # Unique contract code per organization
         UniqueConstraint('organization_id', 'contract_code', name='uq_org_contract_code'),
         
-        # Only one default contract per organization
-        UniqueConstraint(
-            'organization_id', 
-            'is_default_contract',
-            name='uq_org_default_contract',
-            # PostgreSQL partial unique index
-            postgresql_where='is_default_contract = TRUE'
-        ),
-        
         CheckConstraint(
             "contract_type IN ('insurance', 'corporate', 'staff', 'senior_citizen', 'standard', 'wholesale', 'government')",
             name='check_contract_type'
@@ -322,13 +313,25 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         Index('idx_contract_code', 'contract_code'),
         Index('idx_contract_type', 'contract_type'),
         Index('idx_contract_status', 'status', 'is_active'),
-        Index('idx_contract_default', 'is_default_contract', 
-              postgresql_where='is_default_contract = TRUE'),
         Index('idx_contract_insurance', 'insurance_provider_id'),
         Index('idx_contract_dates', 'effective_from', 'effective_to'),
-        Index('idx_contract_active_dates', 
-              'organization_id', 'is_active', 'status', 'effective_from', 'effective_to',
-              postgresql_where="is_active = TRUE AND status = 'active'"),
+        
+        # Partial unique index for default contract (only one default per org)
+        # Using Index with unique=True instead of UniqueConstraint for postgresql_where support
+        Index(
+            'idx_contract_default_unique', 
+            'organization_id', 
+            'is_default_contract',
+            unique=True,
+            postgresql_where='is_default_contract = TRUE'
+        ),
+        
+        # Partial index for active contracts
+        Index(
+            'idx_contract_active_dates', 
+            'organization_id', 'is_active', 'status', 'effective_from', 'effective_to',
+            postgresql_where="is_active = TRUE AND status = 'active'"
+        ),
     )
     
     def is_valid_for_date(self, check_date: date = None) -> bool:
