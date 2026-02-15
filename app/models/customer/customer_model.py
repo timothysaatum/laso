@@ -39,7 +39,7 @@ class Customer(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         nullable=False,
         default='walk_in',
         index=True,
-        comment="walk_in, registered, insurance, corporate"
+        comment="walk_in, registered"
     )
     
     # Personal information (optional for walk-in)
@@ -143,10 +143,6 @@ class Customer(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         default=False,
         nullable=False,
         comment="Whether insurance has been verified"
-    )
-
-    insurance_verified_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True)
     )
 
     # Preferred price contract (can override insurance contract)

@@ -225,6 +225,15 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         Numeric(10, 2),
         comment="Amount covered by insurance"
     )
+    insurance_verified_at_sale: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        comment="When insurance verification was completed"
+    )
+    insurance_verified_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey('users.id', ondelete='SET NULL'),
+        comment="User who verified insurance"
+    )
 
     # Relationships
     price_contract: Mapped[Optional["PriceContract"]] = relationship()
