@@ -138,13 +138,6 @@ class Customer(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         comment="Scanned insurance card for verification"
     )
 
-    insurance_verified: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-        nullable=False,
-        comment="Whether insurance has been verified"
-    )
-
     # Preferred price contract (can override insurance contract)
     preferred_contract_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
@@ -159,6 +152,11 @@ class Customer(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     
     sales: Mapped[List["Sale"]] = relationship(back_populates="customer")
     prescriptions: Mapped[List["Prescription"]] = relationship(back_populates="customer")
+    
+    @property
+    def has_insurance(self) -> bool:
+        """Customer has insurance on file"""
+        return self.insurance_provider_id is not None
     
     __table_args__ = (
         CheckConstraint(

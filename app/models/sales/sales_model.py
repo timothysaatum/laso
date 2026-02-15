@@ -224,6 +224,12 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         Numeric(10, 2),
         comment="Amount covered by insurance"
     )
+    insurance_verified: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="Whether insurance has been verified"
+    )
     insurance_verified_at_sale: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         comment="When insurance verification was completed"
@@ -243,6 +249,21 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         cascade="all, delete-orphan"
     )
     
+    @property
+    def is_insurance_verified(self) -> bool:
+        """Check if insurance was verified for this sale"""
+        return (
+            self.insurance_verified_at_sale is not None 
+            and self.insurance_verified_by is not None
+        )
+    
+    @property
+    def requires_insurance_verification(self) -> bool:
+        """Check if this sale needs insurance verification"""
+        if not self.price_contract:
+            return False
+        return self.price_contract.contract_type == 'insurance'
+    
     __table_args__ = (
         CheckConstraint(
             "payment_method IN ('cash', 'card', 'mobile_money', 'insurance', 'credit', 'split')",
@@ -255,6 +276,13 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         CheckConstraint(
             "status IN ('draft', 'completed', 'cancelled', 'refunded')",
             name='check_sale_status'
+        ),
+        CheckConstraint(
+            """
+            (insurance_claim_number IS NULL) OR 
+            (insurance_verified_at_sale IS NOT NULL AND insurance_verified_by IS NOT NULL)
+            """,
+        name='check_insurance_verification_required'
         ),
         CheckConstraint("subtotal >= 0", name='check_subtotal'),
         CheckConstraint("total_amount >= 0", name='check_total_amount'),
