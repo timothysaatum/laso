@@ -186,7 +186,6 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         default=False,
         nullable=False
     )
-    # In Sale model, add:
 
     price_contract_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
@@ -312,7 +311,6 @@ class SaleItem(Base, TimestampMixin):
     )
     
     batch_number: Mapped[Optional[str]] = mapped_column(String(100))
-    # In SaleItem model, add:
 
     base_price: Mapped[float] = mapped_column(
         Numeric(10, 2),
