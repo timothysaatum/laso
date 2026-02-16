@@ -2,6 +2,7 @@
 Price Contract Routes
 API endpoints for managing price contracts
 """
+from datetime import date
 from fastapi import APIRouter, Depends, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
@@ -474,7 +475,7 @@ async def get_available_contracts(
             "requires_verification": true,
             "requires_approval": false,
             "display": "GLICO Insurance (10% + copay)",
-            "warning": "⚠️ Verify insurance card"
+            "warning": "Verify insurance card"
         }
     ]
     ```
