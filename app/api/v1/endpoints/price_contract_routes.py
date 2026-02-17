@@ -3,6 +3,7 @@ Price Contract Routes
 API endpoints for managing price contracts
 """
 from datetime import date
+from decimal import Decimal
 from fastapi import APIRouter, Depends, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
@@ -134,6 +135,14 @@ async def list_contracts(
     - Pagination info
     """
     # Build filters
+    # Parse date string if provided
+    valid_date = None
+    if valid_on_date:
+        try:
+            valid_date = date.fromisoformat(valid_on_date)
+        except (ValueError, TypeError):
+            valid_date = None
+    
     filters = PriceContractFilters(
         contract_type=contract_type,
         status=status,
@@ -141,10 +150,22 @@ async def list_contracts(
         is_default=is_default,
         insurance_provider_id=insurance_provider_id,
         branch_id=branch_id,
+        user_role=None,
         search=search,
-        valid_on_date=valid_on_date,
+        valid_on_date=valid_date,
+        expiring_within_days=None,
+        min_discount=None,
+        max_discount=None,
+        requires_verification=None,
+        requires_approval=None,
+        created_by=None,
+        approved_by=None,
+        min_usage_count=None,
+        used_in_last_days=None,
         sort_by=sort_by,
-        sort_order=sort_order
+        sort_order=sort_order,
+        page=page,
+        page_size=page_size
     )
     
     contracts, total = await PriceContractService.get_contracts(
@@ -155,14 +176,55 @@ async def list_contracts(
         page_size=page_size
     )
     
+    # Calculate summary statistics
     total_pages = (total + page_size - 1) // page_size
     
+    # Get contract status counts
+    from sqlalchemy import select, func
+    from app.models.pricing.pricing_model import PriceContract
+    
+    result = await db.execute(
+        select(func.count())
+        .select_from(PriceContract)
+        .where(
+            PriceContract.organization_id == current_user.organization_id,
+            PriceContract.is_deleted == False,
+            PriceContract.status == 'active'
+        )
+    )
+    total_active_contracts = result.scalar() or 0
+    
+    result = await db.execute(
+        select(func.count())
+        .select_from(PriceContract)
+        .where(
+            PriceContract.organization_id == current_user.organization_id,
+            PriceContract.is_deleted == False,
+            PriceContract.status == 'suspended'
+        )
+    )
+    total_suspended_contracts = result.scalar() or 0
+    
+    result = await db.execute(
+        select(func.count())
+        .select_from(PriceContract)
+        .where(
+            PriceContract.organization_id == current_user.organization_id,
+            PriceContract.is_deleted == False,
+            PriceContract.status == 'expired'
+        )
+    )
+    total_expired_contracts = result.scalar() or 0
+    
     return PriceContractListResponse(
-        contracts=contracts,
+        contracts=[PriceContractResponse.model_validate(c) for c in contracts],
         total=total,
         page=page,
         page_size=page_size,
-        total_pages=total_pages
+        total_pages=total_pages,
+        total_active_contracts=total_active_contracts,
+        total_suspended_contracts=total_suspended_contracts,
+        total_expired_contracts=total_expired_contracts
     )
 
 
@@ -520,29 +582,33 @@ async def duplicate_contract(
     
     # Create new contract data
     new_contract_data = PriceContractCreate(
+        organization_id=current_user.organization_id,
         contract_code=new_code,
         contract_name=new_name,
         description=original.description,
         contract_type=original.contract_type,
         is_default_contract=False,  # Never duplicate as default
         discount_type=original.discount_type,
-        discount_percentage=original.discount_percentage,
+        discount_percentage=Decimal(str(original.discount_percentage)) if original.discount_percentage else Decimal('0.00'),
         applies_to_prescription_only=original.applies_to_prescription_only,
         applies_to_otc=original.applies_to_otc,
         excluded_drug_categories=original.excluded_drug_categories,
         excluded_drug_ids=original.excluded_drug_ids,
-        minimum_price_override=original.minimum_price_override,
-        maximum_discount_amount=original.maximum_discount_amount,
+        minimum_price_override=Decimal(str(original.minimum_price_override)) if original.minimum_price_override else None,
+        maximum_discount_amount=Decimal(str(original.maximum_discount_amount)) if original.maximum_discount_amount else None,
+        minimum_purchase_amount=Decimal(str(original.minimum_purchase_amount)) if original.minimum_purchase_amount else None,
+        maximum_purchase_amount=Decimal(str(original.maximum_purchase_amount)) if original.maximum_purchase_amount else None,
         applies_to_all_branches=original.applies_to_all_branches,
         applicable_branch_ids=original.applicable_branch_ids,
         effective_from=date.today(),  # Start from today
         effective_to=original.effective_to,
         requires_verification=original.requires_verification,
-        requires_approval=original.requires_approval,
         allowed_user_roles=original.allowed_user_roles,
+        daily_usage_limit=None,
+        per_customer_usage_limit=None,
         insurance_provider_id=original.insurance_provider_id,
-        copay_amount=original.copay_amount,
-        copay_percentage=original.copay_percentage,
+        copay_amount=Decimal(str(original.copay_amount)) if original.copay_amount else None,
+        copay_percentage=Decimal(str(original.copay_percentage)) if original.copay_percentage else None,
         status='draft',  # Always create as draft
         is_active=False
     )

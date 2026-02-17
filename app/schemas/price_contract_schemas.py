@@ -1,6 +1,5 @@
 """
-Enhanced Price Contract Schemas
-Robust, secure, and scalable schemas for price contract management
+Price Contract Schemas
 
 Features:
 - Comprehensive validation rules
@@ -69,8 +68,8 @@ class PriceContractBase(BaseSchema):
     
     discount_percentage: Decimal = Field(
         default=Decimal('0.00'),
-        ge=Decimal('0.00'),
-        le=Decimal('100.00'),
+        ge=0.0,
+        le=100.0,
         decimal_places=2,
         description="Discount percentage: 5.00, 10.00, 15.00, 20.00"
     )
@@ -107,28 +106,28 @@ class PriceContractBase(BaseSchema):
     
     minimum_price_override: Optional[Decimal] = Field(
         None,
-        ge=Decimal('0.00'),
+        ge=0.0,
         decimal_places=2,
         description="Never go below this price even with discount (floor price)"
     )
     
     maximum_discount_amount: Optional[Decimal] = Field(
         None,
-        ge=Decimal('0.00'),
+        ge=0.0,
         decimal_places=2,
         description="Cap the discount amount per item (maximum savings)"
     )
     
     minimum_purchase_amount: Optional[Decimal] = Field(
         None,
-        ge=Decimal('0.00'),
+        ge=0.0,
         decimal_places=2,
         description="Minimum purchase amount to qualify for contract"
     )
     
     maximum_purchase_amount: Optional[Decimal] = Field(
         None,
-        ge=Decimal('0.00'),
+        ge=0.0,
         decimal_places=2,
         description="Maximum purchase amount for contract applicability"
     )
@@ -205,15 +204,15 @@ class PriceContractBase(BaseSchema):
     
     copay_amount: Optional[Decimal] = Field(
         None,
-        ge=Decimal('0.00'),
+        ge=0.0,
         decimal_places=2,
         description="Fixed copay amount patient must pay"
     )
     
     copay_percentage: Optional[Decimal] = Field(
         None,
-        ge=Decimal('0.00'),
-        le=Decimal('100.00'),
+        ge=0.0,
+        le=100.0,
         decimal_places=2,
         description="Percentage of price patient must pay as copay"
     )
@@ -377,8 +376,8 @@ class PriceContractUpdate(BaseSchema):
     
     discount_percentage: Optional[Decimal] = Field(
         None,
-        ge=Decimal('0.00'),
-        le=Decimal('100.00'),
+        ge=0.0,
+        le=100.0,
         decimal_places=2
     )
     
@@ -389,10 +388,10 @@ class PriceContractUpdate(BaseSchema):
     excluded_drug_ids: Optional[List[uuid.UUID]] = None
     
     # Price limits
-    minimum_price_override: Optional[Decimal] = Field(None, ge=Decimal('0.00'))
-    maximum_discount_amount: Optional[Decimal] = Field(None, ge=Decimal('0.00'))
-    minimum_purchase_amount: Optional[Decimal] = Field(None, ge=Decimal('0.00'))
-    maximum_purchase_amount: Optional[Decimal] = Field(None, ge=Decimal('0.00'))
+    minimum_price_override: Optional[Decimal] = Field(None, ge=0.0)
+    maximum_discount_amount: Optional[Decimal] = Field(None, ge=0.0)
+    minimum_purchase_amount: Optional[Decimal] = Field(None, ge=0.0)
+    maximum_purchase_amount: Optional[Decimal] = Field(None, ge=0.0)
     
     # Branch applicability
     applies_to_all_branches: Optional[bool] = None
@@ -409,8 +408,8 @@ class PriceContractUpdate(BaseSchema):
     per_customer_usage_limit: Optional[int] = Field(None, ge=1)
     
     # Insurance fields
-    copay_amount: Optional[Decimal] = Field(None, ge=Decimal('0.00'))
-    copay_percentage: Optional[Decimal] = Field(None, ge=Decimal('0.00'), le=Decimal('100.00'))
+    copay_amount: Optional[Decimal] = Field(None, ge=0.0)
+    copay_percentage: Optional[Decimal] = Field(None, ge=0.0, le=100.0)
     requires_preauthorization: Optional[bool] = None
     
     # Status
@@ -594,15 +593,15 @@ class PriceContractItemBase(BaseSchema):
     
     override_discount_percentage: Optional[Decimal] = Field(
         None,
-        ge=Decimal('0.00'),
-        le=Decimal('100.00'),
+        ge=0.0,
+        le=100.0,
         decimal_places=2,
         description="Override contract discount for this specific drug"
     )
     
     fixed_price: Optional[Decimal] = Field(
         None,
-        ge=Decimal('0.00'),
+        ge=0.0,
         decimal_places=2,
         description="Set fixed price (ignores base price and discount)"
     )
@@ -661,8 +660,8 @@ class PriceContractItemCreate(PriceContractItemBase):
 
 class PriceContractItemUpdate(BaseSchema):
     """Schema for updating contract item"""
-    override_discount_percentage: Optional[Decimal] = Field(None, ge=Decimal('0.00'), le=Decimal('100.00'))
-    fixed_price: Optional[Decimal] = Field(None, ge=Decimal('0.00'))
+    override_discount_percentage: Optional[Decimal] = Field(None, ge=0.0, le=100.0)
+    fixed_price: Optional[Decimal] = Field(None, ge=0.0)
     is_excluded: Optional[bool] = None
     notes: Optional[str] = Field(None, max_length=1000)
     valid_from: Optional[date] = None
@@ -768,8 +767,8 @@ class PriceContractFilters(BaseSchema):
         description="Find contracts expiring within X days"
     )
     
-    min_discount: Optional[Decimal] = Field(None, ge=Decimal('0.00'))
-    max_discount: Optional[Decimal] = Field(None, le=Decimal('100.00'))
+    min_discount: Optional[Decimal] = Field(None, ge=0.0)
+    max_discount: Optional[Decimal] = Field(None, le=100.0)
     
     requires_verification: Optional[bool] = None
     requires_approval: Optional[bool] = None
@@ -902,7 +901,7 @@ class VerifyContractEligibilityRequest(BaseSchema):
     customer_id: Optional[uuid.UUID] = None
     drug_ids: List[uuid.UUID] = Field(default_factory=list)
     branch_id: uuid.UUID
-    sale_amount: Optional[Decimal] = Field(None, ge=Decimal('0.00'))
+    sale_amount: Optional[Decimal] = Field(None, ge=0.0)
 
 
 class ContractEligibilityResponse(BaseSchema):

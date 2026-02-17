@@ -1,5 +1,5 @@
 """
-Enhanced Customer Schemas
+Customer Schemas
 Updated to support price contracts, insurance integration, and robust validation
 """
 from app.schemas.base_schemas import BaseSchema, SyncSchema, TimestampSchema
@@ -16,7 +16,7 @@ import uuid
 # ============================================
 
 class CustomerBase(BaseSchema):
-    """Base customer fields with comprehensive validation"""
+    """Base customer"""
     customer_type: str = Field(
         default="walk_in",
         pattern="^(walk_in|registered|insurance|corporate)$",

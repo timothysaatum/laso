@@ -175,7 +175,6 @@ class PriceContractService:
             
             # Usage controls
             requires_verification=contract_data.requires_verification,
-            requires_approval=contract_data.requires_approval,
             allowed_user_roles=contract_data.allowed_user_roles,
             
             # Insurance-specific
@@ -287,10 +286,14 @@ class PriceContractService:
                 sort_column = PriceContract.contract_name
             elif filters.sort_by == 'discount_percentage':
                 sort_column = PriceContract.discount_percentage
-            elif filters.sort_by == 'total_transactions':
+            elif filters.sort_by == 'usage_count':
                 sort_column = PriceContract.total_transactions
+            elif filters.sort_by == 'total_sales_amount':
+                sort_column = PriceContract.total_discount_given
             elif filters.sort_by == 'effective_from':
                 sort_column = PriceContract.effective_from
+            elif filters.sort_by == 'last_used_at':
+                sort_column = PriceContract.last_used_at
             else:  # default: created_at
                 sort_column = PriceContract.created_at
             
@@ -304,7 +307,7 @@ class PriceContractService:
         # Get total count
         count_query = select(func.count()).select_from(query.subquery())
         result = await db.execute(count_query)
-        total = result.scalar()
+        total = result.scalar() or 0
         
         # Apply pagination
         offset = (page - 1) * page_size
@@ -312,7 +315,7 @@ class PriceContractService:
         
         # Execute query
         result = await db.execute(query)
-        contracts = result.scalars().all()
+        contracts = list(result.scalars().all())
         
         return contracts, total
     
@@ -639,7 +642,7 @@ class PriceContractService:
                 Sale.status == 'completed'
             )
         )
-        recent_sales = result.scalar()
+        recent_sales = result.scalar() or 0
         
         if recent_sales > 0:
             raise HTTPException(
@@ -854,7 +857,6 @@ class PriceContractService:
             "discount_percentage": float(contract.discount_percentage),
             "is_default": contract.is_default_contract,
             "requires_verification": contract.requires_verification,
-            "requires_approval": contract.requires_approval,
             "display": display,
             "warning": "Verify insurance card" if contract.requires_verification else None
         }

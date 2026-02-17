@@ -144,6 +144,17 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         comment="Cap the discount amount per item"
     )
     
+    # Purchase amount limits for the entire transaction
+    minimum_purchase_amount: Mapped[Optional[float]] = mapped_column(
+        Numeric(10, 2),
+        comment="Minimum total purchase amount required for this contract"
+    )
+    
+    maximum_purchase_amount: Mapped[Optional[float]] = mapped_column(
+        Numeric(10, 2),
+        comment="Maximum total purchase amount allowed under this contract"
+    )
+    
     # ==================== BRANCH APPLICABILITY ====================
     
     applies_to_all_branches: Mapped[bool] = mapped_column(

@@ -14,10 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from decimal import Decimal
 import uuid
-from typing import List, Dict, Tuple
+from typing import List, Dict, Optional
 
 from app.models.sales.sales_model import Sale, SaleItem
 from app.models.inventory.branch_inventory import BranchInventory, DrugBatch, StockAdjustment
@@ -27,6 +27,7 @@ from app.models.customer.customer_model import Customer
 from app.models.precriptions.prescription_model import Prescription
 from app.models.user.user_model import User
 from app.models.system_md.sys_models import AuditLog, SystemAlert
+from app.models.pricing.pricing_model import PriceContract, PriceContractItem
 
 from app.schemas.sales_schemas import (
     SaleCreate, SaleWithDetails, ProcessSaleResponse,
@@ -239,28 +240,191 @@ class SalesService:
                     inventory.reserved_quantity -= qty
                 raise e
             
-            # 9. Calculate totals
+            # 9. Fetch and validate the price contract
+            result = await db.execute(
+                select(PriceContract)
+                .where(
+                    PriceContract.id == sale_data.price_contract_id,
+                    PriceContract.organization_id == user.organization_id,
+                    PriceContract.is_deleted == False,
+                    PriceContract.is_active == True,
+                    PriceContract.status == 'active'
+                )
+            )
+            contract = result.scalar_one_or_none()
+            
+            if not contract:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Price contract not found or not active"
+                )
+            
+            # Verify contract is valid for today's date
+            today = date.today()
+            if today < contract.effective_from:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Contract '{contract.contract_name}' is not yet effective (starts {contract.effective_from})"
+                )
+            if contract.effective_to and today > contract.effective_to:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Contract '{contract.contract_name}' has expired ({contract.effective_to})"
+                )
+            
+            # Verify branch is eligible for the contract
+            if not contract.applies_to_all_branches:
+                if sale_data.branch_id not in (contract.applicable_branch_ids or []):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Contract '{contract.contract_name}' is not applicable at this branch"
+                    )
+            
+            # Verify user role is allowed to apply contract (empty list = all roles allowed)
+            if contract.allowed_user_roles and user.role not in contract.allowed_user_roles:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Your role '{user.role}' is not permitted to apply contract '{contract.contract_name}'"
+                )
+            
+            # Insurance contracts require a verified registered customer
+            if contract.contract_type == 'insurance':
+                if not sale_data.customer_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Insurance contracts require a registered customer"
+                    )
+                if not sale_data.insurance_verified:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Insurance eligibility must be verified before processing"
+                    )
+            
+            # Load any per-drug pricing overrides for this contract
+            result = await db.execute(
+                select(PriceContractItem)
+                .where(
+                    PriceContractItem.contract_id == contract.id,
+                    PriceContractItem.drug_id.in_([item.drug_id for item in sale_data.items])
+                )
+            )
+            contract_items: Dict[uuid.UUID, PriceContractItem] = {
+                ci.drug_id: ci for ci in result.scalars().all()
+            }
+            
+            # 10. Calculate per-item pricing using contract rules
             subtotal = Decimal('0')
-            total_discount = Decimal('0')
+            total_contract_discount = Decimal('0')
             total_tax = Decimal('0')
+            
+            item_pricing: List[Dict] = []  # Holds computed values per item for SaleItem creation
             
             for item in sale_data.items:
                 drug = drugs[item.drug_id]
-
                 unit_price = Decimal(str(drug.unit_price))
-                tax_rate = Decimal(str(drug.tax_rate)) if drug.tax_rate else Decimal('0')
-
+                tax_rate = Decimal(str(drug.tax_rate)) if getattr(drug, 'tax_rate', None) else Decimal('0')
                 item_subtotal = item.quantity * unit_price
-                item_discount = item_subtotal * (item.discount_percentage / 100) if item.discount_percentage else Decimal('0')
-                item_tax = (item_subtotal - item_discount) * (tax_rate / 100) if tax_rate else Decimal('0')
+                
+                # Determine if this drug is eligible for the contract
+                contract_item = contract_items.get(item.drug_id)
+                is_excluded = (
+                    (contract_item and contract_item.is_excluded)
+                    or item.drug_id in (contract.excluded_drug_ids or [])
+                    or (getattr(drug, 'category_id', None) and getattr(drug, 'category_id') in (contract.excluded_drug_categories or []))
+                    or (drug.requires_prescription and not contract.applies_to_prescription_only and contract.applies_to_otc)
+                    or (not drug.requires_prescription and contract.applies_to_prescription_only)
+                )
+                
+                contract_discount_pct = Decimal('0')
+                contract_discount_amount = Decimal('0')
+                fixed_price_used = False
+                insurance_covered = False
+                patient_copay = None
+                
+                if not is_excluded:
+                    if contract_item and contract_item.fixed_price is not None:
+                        # Fixed price overrides everything
+                        effective_unit_price = Decimal(str(contract_item.fixed_price))
+                        contract_discount_amount = max(Decimal('0'), (unit_price - effective_unit_price) * item.quantity)
+                        contract_discount_pct = (
+                            ((unit_price - effective_unit_price) / unit_price * 100) if unit_price > 0 else Decimal('0')
+                        )
+                        fixed_price_used = True
+                    else:
+                        # Use override discount or contract default
+                        effective_pct = (
+                            contract_item.override_discount_percentage
+                            if contract_item and contract_item.override_discount_percentage is not None
+                            else contract.discount_percentage
+                        )
+                        contract_discount_pct = effective_pct
+                        raw_discount = item_subtotal * (Decimal(str(effective_pct)) / 100)
+                        
+                        # Apply maximum_discount_amount cap if set
+                        if contract.maximum_discount_amount is not None:
+                            raw_discount = min(raw_discount, contract.maximum_discount_amount)
+                        
+                        contract_discount_amount = raw_discount
+                    
+                    # Apply minimum_price_override floor
+                    if contract.minimum_price_override is not None and not fixed_price_used:
+                        discounted_unit_price = (item_subtotal - Decimal(str(contract_discount_amount))) / item.quantity
+                        if discounted_unit_price < Decimal(str(contract.minimum_price_override)):
+                            contract_discount_amount = max(
+                                Decimal('0'),
+                                item_subtotal - (Decimal(str(contract.minimum_price_override)) * item.quantity)
+                            )
+                    
+                    # Insurance copay handling
+                    if contract.contract_type == 'insurance':
+                        insurance_covered = True
+                        if contract.copay_amount is not None:
+                            patient_copay = contract.copay_amount * item.quantity
+                        elif contract.copay_percentage is not None:
+                            discounted_subtotal = item_subtotal - Decimal(str(contract_discount_amount))
+                            patient_copay = discounted_subtotal * (Decimal(str(contract.copay_percentage)) / 100)
+                
+                discounted_subtotal = item_subtotal - Decimal(str(contract_discount_amount))
+                item_tax_amount = discounted_subtotal * (tax_rate / 100) if tax_rate else Decimal('0')
+                item_total = discounted_subtotal + item_tax_amount
                 
                 subtotal += item_subtotal
-                total_discount += item_discount
-                total_tax += item_tax
+                total_contract_discount += Decimal(str(contract_discount_amount))
+                total_tax += item_tax_amount
+                
+                item_pricing.append({
+                    'item': item,
+                    'drug': drug,
+                    'unit_price': unit_price,
+                    'item_subtotal': item_subtotal,
+                    'contract_discount_pct': contract_discount_pct,
+                    'contract_discount_amount': contract_discount_amount,
+                    'additional_discount_amount': Decimal('0'),
+                    'total_discount_amount': contract_discount_amount,
+                    'tax_rate': tax_rate,
+                    'item_tax_amount': item_tax_amount,
+                    'item_total': item_total,
+                    'insurance_covered': insurance_covered,
+                    'patient_copay': patient_copay,
+                    'is_excluded': is_excluded,
+                })
             
-            total_amount = subtotal - total_discount + total_tax
+            total_amount = subtotal - total_contract_discount + total_tax
             
-            # 10. Validate payment
+            # Validate minimum purchase amount for the contract
+            if contract.minimum_purchase_amount and total_amount < contract.minimum_purchase_amount:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Minimum purchase of {contract.minimum_purchase_amount} required for '{contract.contract_name}'"
+                )
+            
+            if contract.maximum_purchase_amount and total_amount > contract.maximum_purchase_amount:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Purchase exceeds contract maximum of {contract.maximum_purchase_amount}"
+                )
+            
+            # 11. Validate payment
             amount_paid = sale_data.amount_paid or total_amount
             if amount_paid < total_amount:
                 raise HTTPException(
@@ -270,10 +434,18 @@ class SalesService:
             
             change_amount = amount_paid - total_amount if amount_paid > total_amount else Decimal('0')
             
-            # 11. Generate sale number
+            # 12. Generate sale number
             sale_number = await SalesService._generate_sale_number(db, branch.code)
             
-            # 12. Create sale record
+            # Calculate insurance coverage totals
+            insurance_covered_amount = None
+            patient_copay_amount = None
+            if contract.contract_type == 'insurance':
+                total_copay = sum(p['patient_copay'] or Decimal('0') for p in item_pricing)
+                patient_copay_amount = total_copay
+                insurance_covered_amount = total_amount - total_copay
+            
+            # 13. Create sale record with full contract tracking
             sale = Sale(
                 id=uuid.uuid4(),
                 organization_id=user.organization_id,
@@ -281,14 +453,36 @@ class SalesService:
                 sale_number=sale_number,
                 customer_id=sale_data.customer_id,
                 customer_name=sale_data.customer_name,
+                
                 subtotal=subtotal,
-                discount_amount=total_discount,
+                contract_discount_amount=total_contract_discount,
+                additional_discount_amount=Decimal('0'),
+                total_discount_amount=total_contract_discount,
                 tax_amount=total_tax,
                 total_amount=total_amount,
+                
+                # Contract snapshot
+                price_contract_id=contract.id,
+                contract_name=contract.contract_name,
+                contract_type=contract.contract_type,
+                contract_discount_percentage=contract.discount_percentage,
+                
+                # Insurance details
+                insurance_claim_number=sale_data.insurance_claim_number,
+                insurance_preauth_number=sale_data.insurance_preauth_number,
+                insurance_verified=sale_data.insurance_verified,
+                insurance_verified_at=datetime.now(timezone.utc) if sale_data.insurance_verified else None,
+                insurance_verified_by=user.id if sale_data.insurance_verified else None,
+                patient_copay_amount=patient_copay_amount,
+                insurance_covered_amount=insurance_covered_amount,
+                
                 payment_method=sale_data.payment_method,
                 payment_status='completed',
                 amount_paid=amount_paid,
                 change_amount=change_amount,
+                payment_reference=sale_data.payment_reference,
+                split_payment_details=sale_data.split_payment_details,
+                
                 prescription_id=sale_data.prescription_id,
                 cashier_id=user.id,
                 pharmacist_id=pharmacist_id,
@@ -307,17 +501,11 @@ class SalesService:
             db.add(sale)
             await db.flush()  # Get sale ID
             
-            # 13. Create sale items
+            # 14. Create sale items with full contract pricing breakdown
             sale_items = []
-            for item in sale_data.items:
-                drug = drugs[item.drug_id]
-                
-                unit_price = Decimal(str(drug.unit_price))
-                tax_rate = Decimal(str(drug.tax_rate)) if drug.tax_rate else Decimal('0')
-                item_subtotal = item.quantity * unit_price
-                item_discount = item_subtotal * (drug.discount_percentage / 100) if drug.discount_percentage else Decimal('0')
-                item_tax_amount = (item_subtotal - item_discount) * (tax_rate / 100) if tax_rate else Decimal('0')
-                item_total = item_subtotal - item_discount + item_tax_amount
+            for pricing in item_pricing:
+                item = pricing['item']
+                drug = pricing['drug']
                 
                 sale_item = SaleItem(
                     id=uuid.uuid4(),
@@ -326,14 +514,30 @@ class SalesService:
                     drug_name=drug.name,
                     drug_sku=drug.sku,
                     quantity=item.quantity,
-                    unit_price=unit_price,
-                    # discount_percentage=item.discount_percentage,
-                    discount_amount=item_discount,
-                    tax_rate=tax_rate,
-                    tax_amount=item_tax_amount,
-                    total_price=item_total,
+                    batch_id=item.batch_id,
+                    
+                    unit_price=pricing['unit_price'],
+                    subtotal=pricing['item_subtotal'],
+                    
+                    contract_discount_percentage=pricing['contract_discount_pct'],
+                    contract_discount_amount=pricing['contract_discount_amount'],
+                    additional_discount_amount=pricing['additional_discount_amount'],
+                    total_discount_amount=pricing['total_discount_amount'],
+                    
+                    tax_rate=pricing['tax_rate'],
+                    tax_amount=pricing['item_tax_amount'],
+                    total_price=pricing['item_total'],
+                    
+                    applied_contract_id=contract.id,
+                    applied_contract_name=contract.contract_name,
+                    insurance_covered=pricing['insurance_covered'],
+                    patient_copay=pricing['patient_copay'],
+                    
                     requires_prescription=drug.requires_prescription,
                     prescription_verified=bool(prescription),
+                    prescription_id=sale_data.prescription_id,
+                    allergy_check_performed=bool(customer),
+                    
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc)
                 )
@@ -449,7 +653,7 @@ class SalesService:
                         DrugBatch.branch_id == sale_data.branch_id,
                         DrugBatch.drug_id == sale_item.drug_id,
                         DrugBatch.remaining_quantity > 0,
-                        DrugBatch.expiry_date <= date.today() + timezone.timedelta(days=90)  # 90 days warning
+                        DrugBatch.expiry_date <= date.today() + timedelta(days=90)  # 90 days warning
                     )
                 )
                 expiring_batches = result.scalars().all()
@@ -564,6 +768,9 @@ class SalesService:
                 batches_updated=batches_updated,
                 loyalty_points_awarded=points_earned,
                 low_stock_alerts_created=low_stock_alerts,
+                contract_applied=contract.contract_name,
+                contract_discount_given=total_contract_discount,
+                estimated_savings=total_contract_discount,
                 success=True,
                 message="Sale processed successfully"
             )
@@ -654,7 +861,7 @@ class SalesService:
             
             # Update sale
             sale.status = 'refunded'
-            sale.refund_amount = refund_data.refund_amount
+            sale.refund_amount = float(refund_data.refund_amount)
             sale.refunded_at = datetime.now(timezone.utc)
             sale.notes = f"Refunded: {refund_data.reason}\n\n{sale.notes or ''}"
             sale.updated_at = datetime.now(timezone.utc)
@@ -670,11 +877,17 @@ class SalesService:
                     None
                 )
                 
+                if not sale_item:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Sale item {refund_item.sale_item_id} not found in this sale"
+                    )
+                
                 # Validate refund quantity
                 if refund_item.quantity > sale_item.quantity:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Cannot refund {refund_item.quantity} units of {sale_item.drug_name}. "
+                        detail=f"Cannot refund {refund_item.quantity} units. "
                                f"Only {sale_item.quantity} were sold."
                     )
                 
@@ -695,14 +908,14 @@ class SalesService:
                 inventory.mark_as_pending_sync()
                 inventory_restored += 1
                 
-                # Restore to batch if batch number is tracked
-                if sale_item.batch_number:
+                # Restore to batch if batch ID is tracked
+                if sale_item.batch_id:
                     result = await db.execute(
                         select(DrugBatch)
                         .where(
                             DrugBatch.branch_id == sale.branch_id,
                             DrugBatch.drug_id == sale_item.drug_id,
-                            DrugBatch.batch_number == sale_item.batch_number
+                            DrugBatch.id == sale_item.batch_id
                         )
                         .with_for_update()
                     )
@@ -777,7 +990,11 @@ class SalesService:
             
             return RefundSaleResponse(
                 sale=sale_with_details,
+                refund_id=uuid.uuid4(),
+                refund_amount=refund_data.refund_amount,
+                refund_method=refund_data.refund_method,
                 inventory_restored=inventory_restored,
+                batches_restored=inventory_restored,  # 1:1 with inventory items restored
                 loyalty_points_deducted=loyalty_points_deducted,
                 success=True,
                 message="Sale refunded successfully"
@@ -829,7 +1046,7 @@ class SalesService:
                     )
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"⚠️ ALLERGY ALERT: Customer {customer.first_name} {customer.last_name} "
+                        detail=f"ALLERGY ALERT: Customer {customer.first_name} {customer.last_name} "
                                f"is allergic to {allergy}. {drug.name} may contain {allergy}. "
                                f"Pharmacist override required."
                     )
@@ -841,7 +1058,7 @@ class SalesService:
                     )
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"⚠️ ALLERGY ALERT: Customer {customer.first_name} {customer.last_name} "
+                        detail=f"ALLERGY ALERT: Customer {customer.first_name} {customer.last_name} "
                                f"is allergic to {allergy}. {drug.name} (generic: {drug.generic_name}) "
                                f"contains {allergy}. Pharmacist override required."
                     )
@@ -853,7 +1070,7 @@ class SalesService:
                     )
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"⚠️ ALLERGY ALERT: Customer {customer.first_name} {customer.last_name} "
+                        detail=f"ALLERGY ALERT: Customer {customer.first_name} {customer.last_name} "
                                f"is allergic to {allergy}. {drug.brand_name} may contain {allergy}. "
                                f"Pharmacist override required."
                     )
@@ -920,6 +1137,8 @@ class SalesService:
         customer_full_name = None
         customer_phone = None
         customer_loyalty_points = None
+        customer_email = None
+        customer_loyalty_tier = None
         
         if sale.customer_id:
             result = await db.execute(
@@ -931,6 +1150,8 @@ class SalesService:
                 customer_full_name = f"{customer.first_name or ''} {customer.last_name or ''}".strip()
                 customer_phone = customer.phone
                 customer_loyalty_points = customer.loyalty_points
+                customer_email = getattr(customer, 'email', None)
+                customer_loyalty_tier = getattr(customer, 'loyalty_tier', None)
         
         # Build items with details
         result = await db.execute(
@@ -945,11 +1166,14 @@ class SalesService:
             )
             drug = result.scalar_one()
             
+            # Build dict without batch_id to avoid conflicts with batch_number
+            item_dict = {k: v for k, v in item.__dict__.items() if k != 'batch_id'}
+            
             items_with_details.append(SaleItemWithDetails(
-                **item.__dict__,
+                **item_dict,
                 drug_generic_name=drug.generic_name,
                 drug_manufacturer=drug.manufacturer,
-                batch_number=item.batch_number
+                batch_number=str(item.batch_id) if item.batch_id else None
             ))
         
         # Calculate points earned - get from organization settings
@@ -961,17 +1185,20 @@ class SalesService:
         loyalty_settings = organization.settings.get('loyalty', {})
         points_rate = Decimal(str(loyalty_settings.get('points_per_unit', 1.0)))
         
-        points_earned = int(sale.total_amount * points_rate) if sale.status == 'completed' else 0
+        points_earned = int(Decimal(str(sale.total_amount)) * points_rate) if sale.status == 'completed' else 0
         
         return SaleWithDetails(
             **sale.__dict__,
             items=items_with_details,
             branch_name=branch.name,
+            branch_address=getattr(branch, 'address', None),
+            organization_name=organization.name,
+            organization_tax_id=getattr(organization, 'tax_id', None),
             cashier_name=cashier.full_name,
             customer_full_name=customer_full_name,
             customer_phone=customer_phone,
-            customer_loyalty_points=customer_loyalty_points,
-            points_earned=points_earned
+            customer_email=customer_email,
+            customer_loyalty_tier=customer_loyalty_tier,
         )
     
     @staticmethod
@@ -982,7 +1209,7 @@ class SalesService:
         entity_id: uuid.UUID,
         user_id: uuid.UUID,
         organization_id: uuid.UUID,
-        changes: dict = None
+        changes: Optional[Dict] = None
     ):
         """Create audit log entry"""
         log = AuditLog(

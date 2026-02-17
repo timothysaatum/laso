@@ -1,6 +1,5 @@
 """
-Enhanced Sales Schemas
-Robust, secure, and scalable schemas for sales transactions with pricing contract integration
+Sales Schemas
 
 Features:
 - Comprehensive validation
@@ -251,33 +250,7 @@ class SaleCreate(SaleBase):
         description="Verification token if contract requires verification (e.g., insurance card scan)"
     )
     
-    # ============================================
-    # ADDITIONAL DISCOUNT (Requires Manager Approval)
-    # ============================================
-    
-    additional_discount_amount: Decimal = Field(
-        default=Decimal('0.00'),
-        ge=Decimal('0.00'),
-        le=Decimal('10000.00'),  # Max additional discount
-        description="Additional manual discount beyond contract (requires manager approval)"
-    )
-    
-    additional_discount_reason: Optional[str] = Field(
-        None,
-        max_length=500,
-        description="Reason for additional discount"
-    )
-    
-    manager_approval_user_id: Optional[uuid.UUID] = Field(
-        None,
-        description="Manager who approved additional discount"
-    )
-    
-    manager_approval_token: Optional[str] = Field(
-        None,
-        description="Manager approval code/token"
-    )
-    
+        
     # ============================================
     # INSURANCE HANDLING
     # ============================================
@@ -316,7 +289,7 @@ class SaleCreate(SaleBase):
     
     amount_paid: Optional[Decimal] = Field(
         None,
-        ge=Decimal('0.00'),
+        ge=0.0,
         description="Amount paid by customer (calculated if not provided)"
     )
     
@@ -361,22 +334,6 @@ class SaleCreate(SaleBase):
             raise ValueError(
                 "Prescription ID required when selling prescription drugs"
             )
-        
-        return self
-    
-    @model_validator(mode='after')
-    def validate_manager_approval(self) -> 'SaleCreate':
-        """Validate manager approval for additional discounts"""
-        if self.additional_discount_amount > Decimal('0.00'):
-            if not self.additional_discount_reason:
-                raise ValueError(
-                    "Reason required for additional discount"
-                )
-            
-            if not self.manager_approval_user_id:
-                raise ValueError(
-                    "Manager approval required for additional discounts"
-                )
         
         return self
     
@@ -719,7 +676,7 @@ class RefundSaleRequest(BaseSchema):
     
     refund_amount: Decimal = Field(
         ...,
-        ge=Decimal('0.00'),
+        ge=0.0,
         description="Amount to refund (calculated from items)"
     )
     
@@ -993,8 +950,8 @@ class SaleFilters(BaseSchema):
     )
     
     # Amount filters
-    min_amount: Optional[Decimal] = Field(None, ge=Decimal('0.00'))
-    max_amount: Optional[Decimal] = Field(None, ge=Decimal('0.00'))
+    min_amount: Optional[Decimal] = Field(None, ge=0.0)
+    max_amount: Optional[Decimal] = Field(None, ge=0.0)
     
     # Insurance filters
     has_insurance: Optional[bool] = None

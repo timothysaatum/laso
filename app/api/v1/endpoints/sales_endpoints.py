@@ -5,7 +5,7 @@ FastAPI endpoints for sales transactions, refunds, and reporting
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from app.core.deps import get_current_user, get_organization_id, require_permission
@@ -13,13 +13,13 @@ from app.db.dependencies import get_db
 from app.models.user.user_model import User
 from app.schemas.sales_schemas import (
     SaleResponse, SaleWithDetails,
-    ProcessSaleRequest, ProcessSaleResponse,
+    SaleCreate, ProcessSaleResponse,
     RefundSaleRequest, RefundSaleResponse,
-    CancelSaleRequest
+    CancelSaleRequest, ReceiptData,
+    SaleFilters
 )
-from app.schemas.syst_schemas import PaginationParams
 from app.services.sales.sales_service import SalesService
-from app.utils.pagination import PaginatedResponse, Paginator
+from app.utils.pagination import PaginatedResponse, Paginator, PaginationParams
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
 
@@ -35,7 +35,7 @@ router = APIRouter(prefix="/sales", tags=["Sales"])
     dependencies=[Depends(require_permission("process_sales"))]
 )
 async def process_sale(
-    sale_data: ProcessSaleRequest,
+    sale_data: SaleCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -45,6 +45,7 @@ async def process_sale(
     **Permissions:** process_sales
     
     **Critical Operation:**
+    - Validates price contract eligibility and applies contract pricing
     - Validates inventory availability
     - Validates prescription if required
     - Updates inventory using FEFO (First Expire, First Out)
@@ -57,20 +58,21 @@ async def process_sale(
     ```json
     {
       "branch_id": "uuid",
-      "customer_id": "uuid",  // Optional for walk-in
-      "customer_name": "John Doe",  // For walk-in customers
+      "price_contract_id": "uuid",
+      "customer_id": "uuid",
+      "customer_name": "Walk-in Customer",
       "items": [
         {
           "drug_id": "uuid",
           "quantity": 2,
-          "unit_price": 15.00,
-          "discount_percentage": 10,
-          "tax_rate": 0,
-          "requires_prescription": false
+          "requires_prescription": false,
+          "prescription_verified": false
         }
       ],
       "payment_method": "cash",
       "amount_paid": 30.00,
+      "insurance_verified": false,
+      "insurance_claim_number": null,
       "prescription_id": null,
       "notes": "Customer request"
     }
@@ -79,9 +81,10 @@ async def process_sale(
     **Response:**
     Returns sale details with:
     - Inventory updates count
-    - Batches updated count
+    - Batches updated count (FEFO)
     - Loyalty points awarded
     - Low stock alerts created
+    - Contract applied and discount given
     """
     return await SalesService.process_sale(db, sale_data, current_user)
 
@@ -141,10 +144,13 @@ async def list_sales(
     branch_id: Optional[uuid.UUID] = Query(None),
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
-    status: Optional[str] = Query(None, regex="^(draft|completed|cancelled|refunded)$"),
+    sale_status: Optional[str] = Query(None, alias="status", pattern="^(draft|completed|cancelled|refunded)$"),
+    payment_status: Optional[str] = Query(None, pattern="^(pending|completed|partial|refunded|cancelled)$"),
     payment_method: Optional[str] = Query(None),
     customer_id: Optional[uuid.UUID] = Query(None),
     cashier_id: Optional[uuid.UUID] = Query(None),
+    price_contract_id: Optional[uuid.UUID] = Query(None, description="Filter by price contract"),
+    contract_type: Optional[str] = Query(None, pattern="^(insurance|corporate|staff|senior_citizen|standard|wholesale|promotional)$"),
     db: AsyncSession = Depends(get_db),
     organization_id: uuid.UUID = Depends(get_organization_id)
 ):
@@ -158,13 +164,16 @@ async def list_sales(
     - start_date: Filter sales from this date
     - end_date: Filter sales until this date
     - status: Filter by status (draft, completed, cancelled, refunded)
-    - payment_method: Filter by payment method (cash, card, mobile_money, etc.)
+    - payment_status: Filter by payment status
+    - payment_method: Filter by payment method (cash, card, mobile_money, insurance, credit, split)
     - customer_id: Filter by customer
     - cashier_id: Filter by cashier
+    - price_contract_id: Filter by price contract applied
+    - contract_type: Filter by contract type (insurance, corporate, staff, etc.)
     
     **Example:**
     ```
-    GET /sales?branch_id=xxx&start_date=2026-02-01T00:00:00Z&end_date=2026-02-28T23:59:59Z&status=completed
+    GET /sales?branch_id=xxx&start_date=2026-02-01T00:00:00Z&status=completed&contract_type=insurance
     ```
     """
     from sqlalchemy import select, and_
@@ -181,8 +190,11 @@ async def list_sales(
     if end_date:
         filters.append(Sale.created_at <= end_date)
     
-    if status:
-        filters.append(Sale.status == status)
+    if sale_status:
+        filters.append(Sale.status == sale_status)
+    
+    if payment_status:
+        filters.append(Sale.payment_status == payment_status)
     
     if payment_method:
         filters.append(Sale.payment_method == payment_method)
@@ -192,6 +204,12 @@ async def list_sales(
     
     if cashier_id:
         filters.append(Sale.cashier_id == cashier_id)
+    
+    if price_contract_id:
+        filters.append(Sale.price_contract_id == price_contract_id)
+    
+    if contract_type:
+        filters.append(Sale.price_contract.contract_type == contract_type)
     
     query = (
         select(Sale)
@@ -264,9 +282,12 @@ async def cancel_sale(
     
     Only sales in 'draft' status can be cancelled.
     For completed sales, use the refund endpoint.
+    Cancellation requires a manager approval user ID and a detailed reason.
+    Inventory can optionally be restored on cancellation.
     """
     from sqlalchemy import select
     from app.models.sales.sales_model import Sale
+    from app.models.user.user_model import User as UserModel
     
     result = await db.execute(
         select(Sale)
@@ -293,8 +314,28 @@ async def cancel_sale(
             detail=f"Cannot cancel sale with status '{sale.status}'. Use refund endpoint for completed sales."
         )
     
+    # Validate manager approval
+    if cancel_data.manager_approval_user_id != current_user.id:
+        result = await db.execute(
+            select(UserModel).where(
+                UserModel.id == cancel_data.manager_approval_user_id,
+                UserModel.organization_id == current_user.organization_id
+            )
+        )
+        approver = result.scalar_one_or_none()
+        if not approver:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Approving manager not found"
+            )
+        if approver.role not in ['manager', 'admin', 'super_admin']:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cancellation approver must be a manager or admin"
+            )
+    
     sale.status = 'cancelled'
-    sale.cancelled_at = datetime.now()
+    sale.cancelled_at = datetime.now(timezone.utc)
     sale.cancelled_by = current_user.id
     sale.cancellation_reason = cancel_data.reason
     sale.mark_as_pending_sync()
@@ -321,14 +362,14 @@ async def get_receipt(
     """
     Get receipt data for a sale
     
-    Returns formatted receipt data for printing or emailing.
+    Returns formatted receipt data suitable for printing or emailing.
+    Includes full contract and insurance breakdown.
     """
     sale_details = await get_sale(sale_id, db, current_user)
     
     from sqlalchemy import select
     from app.models.pharmacy.pharmacy_model import Organization, Branch
     
-    # Get organization details
     result = await db.execute(
         select(Organization).where(Organization.id == sale_details.organization_id)
     )
@@ -339,43 +380,66 @@ async def get_receipt(
     )
     branch = result.scalar_one()
     
-    return {
+    receipt = {
         "receipt_number": sale_details.sale_number,
         "receipt_date": sale_details.created_at,
         "organization": {
             "name": organization.name,
-            "tax_id": organization.tax_id,
-            "phone": organization.phone,
-            "email": organization.email
+            "tax_id": getattr(organization, 'tax_id', None),
+            "phone": getattr(organization, 'phone', None),
+            "email": getattr(organization, 'email', None),
         },
         "branch": {
             "name": branch.name,
-            "address": branch.address,
-            "phone": branch.phone
+            "address": getattr(branch, 'address', None),
+            "phone": getattr(branch, 'phone', None),
         },
         "customer": {
             "name": sale_details.customer_full_name or sale_details.customer_name or "Walk-in Customer",
-            "phone": sale_details.customer_phone
+            "phone": sale_details.customer_phone,
         },
         "items": [
             {
                 "name": item.drug_name,
+                "generic_name": item.drug_generic_name,
                 "quantity": item.quantity,
                 "unit_price": float(item.unit_price),
-                "discount": float(item.discount_amount),
+                "subtotal": float(item.subtotal),
+                "contract_discount": float(item.contract_discount_amount),
+                "additional_discount": float(item.additional_discount_amount),
+                "total_discount": float(item.total_discount_amount),
                 "tax": float(item.tax_amount),
-                "total": float(item.total_price)
+                "total": float(item.total_price),
+                "batch_number": item.batch_number,
+                "insurance_covered": item.insurance_covered,
+                "patient_copay": float(item.patient_copay) if item.patient_copay else None,
             }
             for item in sale_details.items
         ],
         "subtotal": float(sale_details.subtotal),
-        "discount": float(sale_details.discount_amount),
+        "contract_discount": float(sale_details.contract_discount_amount),
+        "additional_discount": float(sale_details.additional_discount_amount),
+        "total_discount": float(sale_details.total_discount_amount),
         "tax": float(sale_details.tax_amount),
         "total": float(sale_details.total_amount),
-        "amount_paid": float(sale_details.amount_paid) if sale_details.amount_paid else float(sale_details.total_amount),
-        "change": float(sale_details.change_amount) if sale_details.change_amount else 0.0,
+        "amount_paid": float(sale_details.amount_paid),
+        "change": float(sale_details.change_amount),
         "payment_method": sale_details.payment_method,
         "cashier": sale_details.cashier_name,
-        "loyalty_points_earned": sale_details.points_earned
+        # Contract details
+        "contract": {
+            "name": sale_details.contract_name,
+            "type": sale_details.contract_type,
+            "discount_percentage": float(sale_details.contract_discount_percentage or 0),
+        } if sale_details.contract_name else None,
+        # Insurance details
+        "insurance": {
+            "claim_number": sale_details.insurance_claim_number,
+            "preauth_number": sale_details.insurance_preauth_number,
+            "patient_copay": float(sale_details.patient_copay_amount or 0),
+            "insurance_covered": float(sale_details.insurance_covered_amount or 0),
+            "verified": sale_details.insurance_verified,
+        } if sale_details.insurance_claim_number else None,
     }
-
+    
+    return receipt
