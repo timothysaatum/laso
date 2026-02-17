@@ -949,7 +949,7 @@ class SalesService:
                 **item.__dict__,
                 drug_generic_name=drug.generic_name,
                 drug_manufacturer=drug.manufacturer,
-                batch_number=item.batch_number  # Now tracked!
+                batch_number=item.batch_number
             ))
         
         # Calculate points earned - get from organization settings
