@@ -1,7 +1,7 @@
 from app.db.base import Base
 from sqlalchemy import (
     String, Integer, Boolean, DateTime, Numeric, Text,
-    ForeignKey, Index, CheckConstraint, UniqueConstraint, Date
+    ForeignKey, Index, CheckConstraint, UniqueConstraint, Date, text
 )
 from app.models.db_types import UUID, ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -18,6 +18,15 @@ if TYPE_CHECKING:
 class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     """
     Price contracts for insurance companies, corporate clients, and discount programs.
+    
+    SIMPLIFIED MODEL - REMOVED:
+    - requires_approval field (no manager approval needed)
+    - All approval-related functionality
+    
+    USAGE:
+    - Personnel can freely select any active contract during checkout
+    - Contract applies discount to all applicable items
+    - No additional manual discounts allowed beyond contract
     
     Examples:
     - "GLICO Insurance Standard Contract" (10% discount)
@@ -47,7 +56,7 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         String(50),
         nullable=False,
         index=True,
-        comment="Unique code: GLICO-STD, SIC-PREM, STAFF-20, STANDARD"
+        comment="Unique code: GLICO-STD, SIC-PREM, STAFF-20, SENIOR-5, STANDARD"
     )
     
     contract_name: Mapped[str] = mapped_column(
@@ -94,7 +103,9 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         comment="Discount percentage: 5.00, 10.00, 15.00, 20.00"
     )
     
-    # Additional pricing rules
+    # ==================== APPLICABILITY RULES ====================
+    
+    # Drug type restrictions
     applies_to_prescription_only: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -109,6 +120,7 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         comment="If TRUE, contract applies to over-the-counter drugs"
     )
     
+    # Exclusions
     excluded_drug_categories: Mapped[List[uuid.UUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)),
         default=list,
@@ -164,7 +176,7 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         comment="Contract end date (NULL = no expiry)"
     )
     
-    # ==================== USAGE CONTROLS ====================
+    # ==================== USAGE CONTROLS (SIMPLIFIED) ====================
     
     requires_verification: Mapped[bool] = mapped_column(
         Boolean,
@@ -173,17 +185,12 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         comment="Require verification (e.g., insurance card scan) before applying"
     )
     
-    requires_approval: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-        nullable=False,
-        comment="Require manager approval during checkout"
-    )
+    # REMOVED: requires_approval field - no manager approval needed anymore
     
     allowed_user_roles: Mapped[List[str]] = mapped_column(
         ARRAY(String),
         default=list,
-        comment="User roles allowed to apply this contract: ['pharmacist', 'cashier', 'manager']"
+        comment="User roles allowed to apply this contract: ['pharmacist', 'cashier', 'manager']. Empty = all roles"
     )
     
     # ==================== INSURANCE-SPECIFIC FIELDS ====================
@@ -215,11 +222,12 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         comment="User who created the contract"
     )
     
+    # Contract approval (for creating the contract itself, not for applying it during sales)
     approved_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey('users.id', ondelete='SET NULL'),
         nullable=True,
-        comment="Manager who approved the contract"
+        comment="Manager who approved this contract for use"
     )
     
     approved_at: Mapped[Optional[datetime]] = mapped_column(
@@ -250,59 +258,48 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         Integer,
         default=0,
         nullable=False,
-        comment="Total sales using this contract"
+        comment="Number of sales using this contract"
     )
     
     total_discount_given: Mapped[float] = mapped_column(
         Numeric(12, 2),
-        default=0.00,
+        default=0,
         nullable=False,
-        comment="Total discount amount given under this contract"
+        comment="Total amount discounted across all sales"
     )
     
     last_used_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
-        nullable=True,
-        comment="Last time this contract was used"
+        comment="Last time this contract was used in a sale"
     )
     
     # ==================== RELATIONSHIPS ====================
     
-    organization: Mapped["Organization"] = relationship(back_populates="price_contracts")
-    insurance_provider: Mapped[Optional["InsuranceProvider"]] = relationship(
-        back_populates="contracts"
-    )
+    insurance_provider: Mapped[Optional["InsuranceProvider"]] = relationship(back_populates="contracts")
     contract_items: Mapped[List["PriceContractItem"]] = relationship(
         back_populates="contract",
         cascade="all, delete-orphan"
     )
     
-    # ==================== CONSTRAINTS ====================
+    # ==================== TABLE CONSTRAINTS ====================
     
     __table_args__ = (
-        # Unique contract code per organization
-        UniqueConstraint('organization_id', 'contract_code', name='uq_org_contract_code'),
-        
         CheckConstraint(
-            "contract_type IN ('insurance', 'corporate', 'staff', 'senior_citizen', 'standard', 'wholesale', 'government')",
+            "contract_type IN ('insurance', 'corporate', 'staff', 'senior_citizen', 'standard', 'wholesale')",
             name='check_contract_type'
         ),
-        
         CheckConstraint(
             "discount_type IN ('percentage', 'fixed_amount', 'custom')",
             name='check_discount_type'
         ),
-        
-        CheckConstraint(
-            "status IN ('draft', 'active', 'suspended', 'expired', 'cancelled')",
-            name='check_contract_status'
-        ),
-        
         CheckConstraint(
             "discount_percentage >= 0 AND discount_percentage <= 100",
             name='check_discount_percentage_range'
         ),
-        
+        CheckConstraint(
+            "status IN ('draft', 'active', 'suspended', 'expired', 'cancelled')",
+            name='check_contract_status'
+        ),
         CheckConstraint(
             "effective_to IS NULL OR effective_to >= effective_from",
             name='check_contract_dates'
@@ -317,22 +314,23 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         Index('idx_contract_dates', 'effective_from', 'effective_to'),
         
         # Partial unique index for default contract (only one default per org)
-        # Using Index with unique=True instead of UniqueConstraint for postgresql_where support
         Index(
             'idx_contract_default_unique', 
             'organization_id', 
             'is_default_contract',
             unique=True,
-            postgresql_where='is_default_contract = TRUE'
+            postgresql_where=text('is_default_contract = TRUE')
         ),
         
         # Partial index for active contracts
         Index(
             'idx_contract_active_dates', 
             'organization_id', 'is_active', 'status', 'effective_from', 'effective_to',
-            postgresql_where="is_active = TRUE AND status = 'active'"
+            postgresql_where=text("is_active = TRUE AND status = 'active'")
         ),
     )
+    
+    # ==================== METHODS ====================
     
     def is_valid_for_date(self, check_date: date = None) -> bool:
         """Check if contract is valid on given date."""
@@ -353,31 +351,93 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         
         return branch_id in self.applicable_branch_ids
     
+    def is_applicable_to_drug(self, drug_id: uuid.UUID, drug_type: str, category_id: Optional[uuid.UUID] = None) -> bool:
+        """
+        Check if contract applies to a specific drug.
+        
+        Args:
+            drug_id: UUID of the drug
+            drug_type: 'prescription' or 'otc'
+            category_id: Optional category UUID
+        
+        Returns:
+            True if contract can be applied to this drug
+        """
+        # Check if drug is explicitly excluded
+        if drug_id in self.excluded_drug_ids:
+            return False
+        
+        # Check if drug's category is excluded
+        if category_id and category_id in self.excluded_drug_categories:
+            return False
+        
+        # Check drug type restrictions
+        if self.applies_to_prescription_only and drug_type != 'prescription':
+            return False
+        
+        if not self.applies_to_otc and drug_type == 'otc':
+            return False
+        
+        return True
+    
+    def can_be_applied_by_user(self, user_role: str) -> bool:
+        """
+        Check if a user with given role can apply this contract.
+        
+        Args:
+            user_role: Role of the user (e.g., 'cashier', 'pharmacist')
+        
+        Returns:
+            True if user can apply this contract
+        """
+        # If no role restrictions, anyone can use it
+        if not self.allowed_user_roles:
+            return True
+        
+        return user_role in self.allowed_user_roles
+    
     def calculate_discount(self, original_price: float) -> float:
-        """Calculate discount amount for a given price."""
+        """
+        Calculate discount amount for a given price.
+        
+        Args:
+            original_price: Base price before discount
+        
+        Returns:
+            Discount amount to subtract from price
+        """
         if self.discount_type == 'percentage':
-            discount = original_price * (self.discount_percentage / 100)
+            discount = original_price * (float(self.discount_percentage) / 100)
         elif self.discount_type == 'fixed_amount':
-            discount = self.discount_percentage  # Reusing field for fixed amount
+            # Reusing discount_percentage field for fixed amount
+            discount = float(self.discount_percentage)
         else:
             discount = 0.00
         
         # Apply maximum discount cap if set
-        if self.maximum_discount_amount and discount > self.maximum_discount_amount:
-            discount = self.maximum_discount_amount
+        if self.maximum_discount_amount and discount > float(self.maximum_discount_amount):
+            discount = float(self.maximum_discount_amount)
         
-        return round(float(discount), 2)
+        return round(discount, 2)
     
     def calculate_final_price(self, original_price: float) -> float:
-        """Calculate final price after applying contract discount."""
+        """
+        Calculate final price after applying contract discount.
+        
+        Args:
+            original_price: Base price before discount
+        
+        Returns:
+            Final price after discount
+        """
         discount = self.calculate_discount(original_price)
         final_price = original_price - discount
         
         # Apply minimum price override if set
-        if self.minimum_price_override and final_price < self.minimum_price_override:
-            final_price = self.minimum_price_override
+        if self.minimum_price_override and final_price < float(self.minimum_price_override):
+            final_price = float(self.minimum_price_override)
         
-        return round(float(final_price), 2)
+        return round(final_price, 2)
 
 
 # ==================== INSURANCE PROVIDER MODEL ====================

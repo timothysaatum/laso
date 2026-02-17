@@ -19,6 +19,11 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
     """
     Sales transactions with comprehensive tracking.
     Optimized for offline-first with conflict resolution.
+    
+    PRICING STRATEGY:
+    - Discounts come ONLY from PriceContract applied to the sale
+    - No additional manual discounts allowed
+    - Personnel can select appropriate contract at checkout
     """
     __tablename__ = 'sales'
     
@@ -64,18 +69,20 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         comment="For walk-in customers without registration"
     )
     
-    # Financial details
+    # ==================== FINANCIAL DETAILS ====================
+    
     subtotal: Mapped[float] = mapped_column(
         Numeric(10, 2),
         nullable=False,
-        comment="Sum of all items before discount and tax"
+        comment="Sum of all items at base prices (before contract discount and tax)"
     )
     
+    # SIMPLIFIED: Only contract-based discount, no additional manual discounts
     discount_amount: Mapped[float] = mapped_column(
         Numeric(10, 2),
         default=0,
         nullable=False,
-        comment="Total discount applied"
+        comment="Total discount from applied contract only"
     )
     
     tax_amount: Mapped[float] = mapped_column(
@@ -89,10 +96,31 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         Numeric(10, 2),
         nullable=False,
         index=True,
-        comment="Final amount to be paid"
+        comment="Final amount: (subtotal - discount_amount + tax_amount)"
     )
     
-    # Payment details
+    # ==================== PRICING CONTRACT ====================
+    
+    price_contract_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey('price_contracts.id', ondelete='SET NULL'),
+        nullable=True,
+        index=True,
+        comment="Price contract applied to this entire sale (selected by cashier)"
+    )
+    
+    contract_name: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        comment="Snapshot of contract name for historical records"
+    )
+    
+    contract_discount_percentage: Mapped[Optional[float]] = mapped_column(
+        Numeric(5, 2),
+        comment="Snapshot of discount percentage from contract"
+    )
+    
+    # ==================== PAYMENT DETAILS ====================
+    
     payment_method: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
@@ -124,7 +152,8 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         comment="Transaction ID from payment gateway"
     )
     
-    # Prescription information
+    # ==================== PRESCRIPTION INFORMATION ====================
+    
     prescription_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey('prescriptions.id', ondelete='SET NULL'),
@@ -135,7 +164,8 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
     prescriber_name: Mapped[Optional[str]] = mapped_column(String(255))
     prescriber_license: Mapped[Optional[str]] = mapped_column(String(100))
     
-    # Staff tracking
+    # ==================== STAFF TRACKING ====================
+    
     cashier_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey('users.id', ondelete='RESTRICT'),
@@ -151,7 +181,43 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         comment="Pharmacist who verified prescription"
     )
     
-    # Additional information
+    # ==================== INSURANCE-SPECIFIC FIELDS ====================
+    
+    insurance_claim_number: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        comment="Insurance claim reference number"
+    )
+    
+    patient_copay_amount: Mapped[Optional[float]] = mapped_column(
+        Numeric(10, 2),
+        comment="Amount patient paid (copay)"
+    )
+    
+    insurance_covered_amount: Mapped[Optional[float]] = mapped_column(
+        Numeric(10, 2),
+        comment="Amount covered by insurance"
+    )
+    
+    insurance_verified: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="Whether insurance has been verified"
+    )
+    
+    insurance_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        comment="When insurance verification was completed"
+    )
+    
+    insurance_verified_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey('users.id', ondelete='SET NULL'),
+        comment="User who verified insurance"
+    )
+    
+    # ==================== ADDITIONAL INFORMATION ====================
+    
     notes: Mapped[Optional[str]] = mapped_column(Text)
     
     # Sale status
@@ -163,7 +229,8 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         comment="draft, completed, cancelled, refunded"
     )
     
-    # Cancellation/refund tracking
+    # ==================== CANCELLATION/REFUND TRACKING ====================
+    
     cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     cancelled_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
@@ -174,7 +241,8 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
     refund_amount: Mapped[Optional[float]] = mapped_column(Numeric(10, 2))
     refunded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     
-    # Receipt tracking
+    # ==================== RECEIPT TRACKING ====================
+    
     receipt_printed: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -186,61 +254,9 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         default=False,
         nullable=False
     )
-
-    price_contract_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey('price_contracts.id', ondelete='SET NULL'),
-        nullable=True,
-        index=True,
-        comment="Price contract applied to this sale"
-    )
-
-    contract_discount_amount: Mapped[float] = mapped_column(
-        Numeric(10, 2),
-        default=0.00,
-        nullable=False,
-        comment="Total discount from contract pricing"
-    )
-
-    additional_discount_amount: Mapped[float] = mapped_column(
-        Numeric(10, 2),
-        default=0.00,
-        nullable=False,
-        comment="Additional manual discounts beyond contract"
-    )
-
-    # Insurance-specific
-    insurance_claim_number: Mapped[Optional[str]] = mapped_column(
-        String(100),
-        comment="Insurance claim reference number"
-    )
-
-    patient_copay_amount: Mapped[Optional[float]] = mapped_column(
-        Numeric(10, 2),
-        comment="Amount patient paid (copay)"
-    )
-
-    insurance_covered_amount: Mapped[Optional[float]] = mapped_column(
-        Numeric(10, 2),
-        comment="Amount covered by insurance"
-    )
-    insurance_verified: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-        nullable=False,
-        comment="Whether insurance has been verified"
-    )
-    insurance_verified_at_sale: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True),
-        comment="When insurance verification was completed"
-    )
-    insurance_verified_by: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey('users.id', ondelete='SET NULL'),
-        comment="User who verified insurance"
-    )
-
-    # Relationships
+    
+    # ==================== RELATIONSHIPS ====================
+    
     price_contract: Mapped[Optional["PriceContract"]] = relationship()
     branch: Mapped["Branch"] = relationship(back_populates="sales")
     customer: Mapped[Optional["Customer"]] = relationship(back_populates="sales")
@@ -249,20 +265,36 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         cascade="all, delete-orphan"
     )
     
+    # ==================== PROPERTIES ====================
+    
     @property
     def is_insurance_verified(self) -> bool:
         """Check if insurance was verified for this sale"""
-        return (
-            self.insurance_verified_at_sale is not None 
-            and self.insurance_verified_by is not None
-        )
+        return self.insurance_verified and self.insurance_verified_at is not None
     
     @property
-    def requires_insurance_verification(self) -> bool:
-        """Check if this sale needs insurance verification"""
-        if not self.price_contract:
-            return False
-        return self.price_contract.contract_type == 'insurance'
+    def has_contract_discount(self) -> bool:
+        """Check if a pricing contract was applied"""
+        return self.price_contract_id is not None and self.discount_amount > 0
+    
+    def calculate_totals(self):
+        """
+        Recalculate sale totals based on items.
+        Call this after adding/removing items or changing contract.
+        """
+        if not self.items:
+            self.subtotal = 0
+            self.discount_amount = 0
+            self.tax_amount = 0
+            self.total_amount = 0
+            return
+        
+        self.subtotal = sum(item.subtotal for item in self.items)
+        self.discount_amount = sum(item.discount_amount for item in self.items)
+        self.tax_amount = sum(item.tax_amount for item in self.items)
+        self.total_amount = sum(item.total_price for item in self.items)
+    
+    # ==================== TABLE CONSTRAINTS ====================
     
     __table_args__ = (
         CheckConstraint(
@@ -277,37 +309,39 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
             "status IN ('draft', 'completed', 'cancelled', 'refunded')",
             name='check_sale_status'
         ),
-        CheckConstraint(
-            """
-            (insurance_claim_number IS NULL) OR 
-            (insurance_verified_at_sale IS NOT NULL AND insurance_verified_by IS NOT NULL)
-            """,
-        name='check_insurance_verification_required'
-        ),
         CheckConstraint("subtotal >= 0", name='check_subtotal'),
-        CheckConstraint("total_amount >= 0", name='check_total_amount'),
         CheckConstraint("discount_amount >= 0", name='check_discount'),
+        CheckConstraint("discount_amount <= subtotal", name='check_discount_not_exceed_subtotal'),
+        CheckConstraint("tax_amount >= 0", name='check_tax'),
+        CheckConstraint("total_amount >= 0", name='check_total'),
+        
+        # Indexes
         Index('idx_sale_org', 'organization_id'),
         Index('idx_sale_branch', 'branch_id'),
-        Index('idx_sale_date', 'created_at'),
-        Index('idx_sale_number', 'sale_number'),
         Index('idx_sale_customer', 'customer_id'),
-        Index('idx_sale_cashier', 'cashier_id'),
+        Index('idx_sale_number', 'sale_number'),
+        Index('idx_sale_date', 'created_at'),
         Index('idx_sale_status', 'status'),
+        Index('idx_sale_payment', 'payment_method', 'payment_status'),
+        Index('idx_sale_cashier', 'cashier_id'),
+        Index('idx_sale_contract', 'price_contract_id'),
         Index('idx_sale_sync', 'sync_status', 'sync_version'),
+        
         # Composite indexes for common queries
-        Index('idx_sale_org_date', 'organization_id', 'created_at'),
         Index('idx_sale_branch_date', 'branch_id', 'created_at'),
-        Index('idx_sale_status_date', 'status', 'created_at'),
-        # Partitioning hint (for large datasets)
-        # Partition by date (monthly) for better performance
+        Index('idx_sale_org_date', 'organization_id', 'created_at'),
     )
 
 
 class SaleItem(Base, TimestampMixin):
     """
-    Individual items in a sale transaction.
-    Denormalized for performance and historical accuracy.
+    Individual line items in a sale.
+    
+    PRICING FLOW:
+    1. Start with drug's base unit_price
+    2. Apply sale's price_contract discount (if any)
+    3. Calculate tax on discounted price
+    4. Store final total_price
     """
     __tablename__ = 'sale_items'
     
@@ -331,99 +365,77 @@ class SaleItem(Base, TimestampMixin):
         index=True
     )
     
-    # Denormalized drug info (for historical accuracy)
-    drug_name: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False,
-        comment="Drug name at time of sale"
+    # Snapshot drug information for historical accuracy
+    drug_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    drug_sku: Mapped[Optional[str]] = mapped_column(String(100))
+    
+    # Batch tracking
+    batch_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey('drug_batches.id', ondelete='SET NULL'),
+        nullable=True,
+        comment="Track which batch this item was sold from (FIFO/FEFO)"
     )
     
-    batch_number: Mapped[Optional[str]] = mapped_column(String(100))
-
-    base_price: Mapped[float] = mapped_column(
-        Numeric(10, 2),
-        nullable=False,
-        comment="Original drug price (before contract)"
-    )
-
-    contract_price: Mapped[Optional[float]] = mapped_column(
-        Numeric(10, 2),
-        comment="Price after applying contract discount"
-    )
-
-    contract_discount_amount: Mapped[float] = mapped_column(
-        Numeric(10, 2),
-        default=0.00,
-        nullable=False,
-        comment="Discount amount from contract"
-    )
-
-    applied_contract_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey('price_contracts.id', ondelete='SET NULL'),
-        comment="Contract used for pricing this item"
-    )
-
-    # Quantity
+    # ==================== PRICING BREAKDOWN ====================
+    
     quantity: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         comment="Number of units sold"
     )
     
-    unit_of_measure: Mapped[str] = mapped_column(
-        String(50),
-        default='unit',
-        nullable=False
-    )
-    
-    # Pricing
     unit_price: Mapped[float] = mapped_column(
         Numeric(10, 2),
         nullable=False,
-        comment="Price per unit at time of sale"
+        comment="Base unit price from drug catalog (before discount)"
     )
     
     subtotal: Mapped[float] = mapped_column(
         Numeric(10, 2),
         nullable=False,
-        comment="quantity * unit_price"
+        comment="quantity * unit_price (before discount)"
     )
     
-    # Discount
+    # Contract-based discount
     discount_percentage: Mapped[float] = mapped_column(
         Numeric(5, 2),
         default=0,
-        nullable=False
+        nullable=False,
+        comment="Discount percentage applied from sale's price contract"
     )
     
     discount_amount: Mapped[float] = mapped_column(
         Numeric(10, 2),
         default=0,
-        nullable=False
+        nullable=False,
+        comment="Total discount: (subtotal * discount_percentage / 100)"
     )
     
-    # Tax
+    # Tax calculation
     tax_rate: Mapped[float] = mapped_column(
         Numeric(5, 2),
         default=0,
-        nullable=False
+        nullable=False,
+        comment="Tax rate percentage from drug catalog"
     )
     
     tax_amount: Mapped[float] = mapped_column(
         Numeric(10, 2),
         default=0,
-        nullable=False
+        nullable=False,
+        comment="Tax on discounted price: (subtotal - discount_amount) * tax_rate / 100"
     )
     
-    # Total for this line item
+    # Final price
     total_price: Mapped[float] = mapped_column(
         Numeric(10, 2),
         nullable=False,
-        comment="Final price for this item (quantity * unit_price - discount + tax)"
+        comment="Final: (subtotal - discount_amount + tax_amount)"
     )
     
-    # Prescription requirement tracking
+    # ==================== PRESCRIPTION TRACKING ====================
+    
     requires_prescription: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -436,20 +448,67 @@ class SaleItem(Base, TimestampMixin):
         nullable=False
     )
     
-    # Relationships
-    applied_contract: Mapped[Optional["PriceContract"]] = relationship()
+    # ==================== RELATIONSHIPS ====================
     
     sale: Mapped["Sale"] = relationship(back_populates="items")
     
+    # ==================== METHODS ====================
+    
+    def apply_pricing(self, contract: Optional[PriceContract] = None):
+        """
+        Calculate pricing for this item.
+        
+        Args:
+            contract: Optional PriceContract to apply discount from
+        """
+        # Calculate subtotal
+        self.subtotal = float(self.quantity * self.unit_price)
+        
+        # Apply contract discount if provided
+        if contract:
+            self.discount_percentage = float(contract.discount_percentage)
+            self.discount_amount = round(
+                self.subtotal * (self.discount_percentage / 100), 
+                2
+            )
+        else:
+            self.discount_percentage = 0
+            self.discount_amount = 0
+        
+        # Calculate tax on discounted price
+        discounted_price = self.subtotal - self.discount_amount
+        self.tax_amount = round(
+            discounted_price * (self.tax_rate / 100),
+            2
+        )
+        
+        # Calculate final total
+        self.total_price = round(
+            self.subtotal - self.discount_amount + self.tax_amount,
+            2
+        )
+    
+    # ==================== TABLE CONSTRAINTS ====================
+    
     __table_args__ = (
         CheckConstraint("quantity > 0", name='check_sale_item_quantity'),
-        CheckConstraint("unit_price >= 0", name='check_sale_item_price'),
+        CheckConstraint("unit_price >= 0", name='check_sale_item_unit_price'),
+        CheckConstraint("subtotal >= 0", name='check_sale_item_subtotal'),
+        CheckConstraint("discount_amount >= 0", name='check_sale_item_discount'),
+        CheckConstraint("discount_amount <= subtotal", name='check_sale_item_discount_not_exceed'),
+        CheckConstraint("tax_amount >= 0", name='check_sale_item_tax'),
         CheckConstraint("total_price >= 0", name='check_sale_item_total'),
+        
+        # Indexes
         Index('idx_sale_item_sale', 'sale_id'),
         Index('idx_sale_item_drug', 'drug_id'),
         Index('idx_sale_item_date', 'created_at'),
+        Index('idx_sale_item_batch', 'batch_id'),
     )
 
+
+# ==================== SUPPLIER AND PURCHASE ORDER MODELS ====================
+# (Keeping these unchanged from your original file)
 
 class Supplier(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     """Supplier/vendor management"""
