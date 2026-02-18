@@ -616,7 +616,7 @@ class SalesService:
                     id=uuid.uuid4(),
                     branch_id=sale_data.branch_id,
                     drug_id=sale_item.drug_id,
-                    adjustment_type='sale',  # Note: 'sale' not in current enum, may need to add or use 'correction'
+                    adjustment_type='sale',
                     quantity_change=-sale_item.quantity,
                     previous_quantity=previous_qty,
                     new_quantity=inventory.quantity,

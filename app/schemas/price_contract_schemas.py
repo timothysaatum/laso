@@ -70,7 +70,6 @@ class PriceContractBase(BaseSchema):
         default=Decimal('0.00'),
         ge=0.0,
         le=100.0,
-        decimal_places=2,
         description="Discount percentage: 5.00, 10.00, 15.00, 20.00"
     )
     
@@ -107,28 +106,24 @@ class PriceContractBase(BaseSchema):
     minimum_price_override: Optional[Decimal] = Field(
         None,
         ge=0.0,
-        decimal_places=2,
         description="Never go below this price even with discount (floor price)"
     )
     
     maximum_discount_amount: Optional[Decimal] = Field(
         None,
         ge=0.0,
-        decimal_places=2,
         description="Cap the discount amount per item (maximum savings)"
     )
     
     minimum_purchase_amount: Optional[Decimal] = Field(
         None,
         ge=0.0,
-        decimal_places=2,
         description="Minimum purchase amount to qualify for contract"
     )
     
     maximum_purchase_amount: Optional[Decimal] = Field(
         None,
         ge=0.0,
-        decimal_places=2,
         description="Maximum purchase amount for contract applicability"
     )
     
@@ -205,7 +200,6 @@ class PriceContractBase(BaseSchema):
     copay_amount: Optional[Decimal] = Field(
         None,
         ge=0.0,
-        decimal_places=2,
         description="Fixed copay amount patient must pay"
     )
     
@@ -213,7 +207,6 @@ class PriceContractBase(BaseSchema):
         None,
         ge=0.0,
         le=100.0,
-        decimal_places=2,
         description="Percentage of price patient must pay as copay"
     )
     
@@ -377,8 +370,7 @@ class PriceContractUpdate(BaseSchema):
     discount_percentage: Optional[Decimal] = Field(
         None,
         ge=0.0,
-        le=100.0,
-        decimal_places=2
+        le=100.0
     )
     
     # Applicability
@@ -595,14 +587,12 @@ class PriceContractItemBase(BaseSchema):
         None,
         ge=0.0,
         le=100.0,
-        decimal_places=2,
         description="Override contract discount for this specific drug"
     )
     
     fixed_price: Optional[Decimal] = Field(
         None,
         ge=0.0,
-        decimal_places=2,
         description="Set fixed price (ignores base price and discount)"
     )
     

@@ -82,7 +82,11 @@ class SyncTrackingMixin:
     def mark_as_pending_sync(self):
         """Mark record as pending sync"""
         self.sync_status = 'pending'
-        self.sync_version += 1
+        # Initialize sync_version to 1 if it's None (for new objects)
+        if self.sync_version is None:
+            self.sync_version = 1
+        else:
+            self.sync_version += 1
     
     def mark_as_synced(self):
         """Mark record as successfully synced"""

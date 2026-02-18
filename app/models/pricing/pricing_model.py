@@ -343,7 +343,7 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     
     # ==================== METHODS ====================
     
-    def is_valid_for_date(self, check_date: date = None) -> bool:
+    def is_valid_for_date(self, check_date: Optional[date] = None) -> bool:
         """Check if contract is valid on given date."""
         check_date = check_date or date.today()
         

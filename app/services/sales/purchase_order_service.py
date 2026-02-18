@@ -75,11 +75,9 @@ class PurchaseOrderService:
         )
         
         db.add(supplier)
-        await db.commit()
-        await db.refresh(supplier)
         
+        # Audit log before commit
         audit_data = supplier_data.model_dump(mode='json')
-        # Audit log
         await PurchaseOrderService._create_audit_log(
             db,
             action='create_supplier',
@@ -89,6 +87,9 @@ class PurchaseOrderService:
             organization_id=supplier.organization_id,
             changes={'after': audit_data}
         )
+        
+        await db.commit()
+        await db.refresh(supplier)
         
         return supplier
     
@@ -231,10 +232,7 @@ class PurchaseOrderService:
             )
             db.add(item)
         
-        await db.commit()
-        await db.refresh(po)
-        
-        # Audit log
+        # Audit log before commit
         await PurchaseOrderService._create_audit_log(
             db,
             action='create_purchase_order',
@@ -248,6 +246,9 @@ class PurchaseOrderService:
                 'items_count': len(po_data.items)
             }}
         )
+        
+        await db.commit()
+        await db.refresh(po)
         
         return po
     
@@ -319,10 +320,7 @@ class PurchaseOrderService:
         po.updated_at = datetime.now(timezone.utc)
         po.mark_as_pending_sync()
         
-        await db.commit()
-        await db.refresh(po)
-        
-        # Audit log
+        # Audit log before commit
         await PurchaseOrderService._create_audit_log(
             db,
             action='submit_purchase_order',
@@ -331,6 +329,9 @@ class PurchaseOrderService:
             user_id=user.id,
             organization_id=po.organization_id
         )
+        
+        await db.commit()
+        await db.refresh(po)
         
         # TODO: Send notification to approvers
         
@@ -376,10 +377,7 @@ class PurchaseOrderService:
         po.updated_at = datetime.now(timezone.utc)
         po.mark_as_pending_sync()
         
-        await db.commit()
-        await db.refresh(po)
-        
-        # Audit log
+        # Audit log before commit
         await PurchaseOrderService._create_audit_log(
             db,
             action='approve_purchase_order',
@@ -388,6 +386,9 @@ class PurchaseOrderService:
             user_id=user.id,
             organization_id=po.organization_id
         )
+        
+        await db.commit()
+        await db.refresh(po)
         
         # TODO: Send notification to orderer and supplier
         
@@ -422,9 +423,7 @@ class PurchaseOrderService:
         po.updated_at = datetime.now(timezone.utc)
         po.mark_as_pending_sync()
         
-        await db.commit()
-        
-        # Audit log
+        # Audit log before commit
         await PurchaseOrderService._create_audit_log(
             db,
             action='reject_purchase_order',
@@ -434,6 +433,8 @@ class PurchaseOrderService:
             organization_id=po.organization_id,
             changes={'reason': reason}
         )
+        
+        await db.commit()
         
         return po
     
@@ -507,11 +508,18 @@ class PurchaseOrderService:
                         detail=f"PO item {item_receive.purchase_order_item_id} not found"
                     )
                 
-                # Validate quantity
-                if po_item.quantity_received + item_receive.quantity_received > po_item.quantity_ordered:
+                # Skip items that are already fully received
+                if po_item.quantity_received >= po_item.quantity_ordered:
+                    continue
+                
+                # Calculate remaining quantity to receive
+                remaining_quantity = po_item.quantity_ordered - po_item.quantity_received
+                
+                # Validate quantity doesn't exceed remaining
+                if item_receive.quantity_received > remaining_quantity:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Cannot receive more than ordered for item {po_item.drug_id}"
+                        detail=f"Cannot receive {item_receive.quantity_received} units of item {po_item.drug_id}. Only {remaining_quantity} units remaining to receive."
                     )
                 
                 # Update PO item
@@ -623,10 +631,7 @@ class PurchaseOrderService:
             po.updated_at = datetime.now(timezone.utc)
             po.mark_as_pending_sync()
             
-            # Commit transaction
-            await db.commit()
-            
-            # Audit log
+            # Audit log - create BEFORE commit, inside transaction
             await PurchaseOrderService._create_audit_log(
                 db,
                 action='receive_purchase_order',
@@ -640,27 +645,30 @@ class PurchaseOrderService:
                     'status': po.status
                 }
             )
-            
-            # Reload with details
-            await db.refresh(po)
-            result = await db.execute(
-                select(PurchaseOrder)
-                .options(
-                    selectinload(PurchaseOrder.items),
-                    selectinload(PurchaseOrder.supplier)
-                )
-                .where(PurchaseOrder.id == po_id)
+        
+        # Commit transaction after context manager exits
+        await db.commit()
+        
+        # Reload with details
+        await db.refresh(po)
+        result = await db.execute(
+            select(PurchaseOrder)
+            .options(
+                selectinload(PurchaseOrder.items),
+                selectinload(PurchaseOrder.supplier)
             )
-            po_with_details = result.scalar_one()
-            
-            # Build response
-            return ReceivePurchaseOrderResponse(
-                purchase_order=await PurchaseOrderService._build_po_with_details(db, po_with_details),
-                batches_created=batches_created,
-                inventory_updated=inventory_updated,
-                success=True,
-                message="Goods received successfully"
-            )
+            .where(PurchaseOrder.id == po_id)
+        )
+        po_with_details = result.scalar_one()
+        
+        # Build response
+        return ReceivePurchaseOrderResponse(
+            purchase_order=await PurchaseOrderService._build_po_with_details(db, po_with_details),
+            batches_created=batches_created,
+            inventory_updated=inventory_updated,
+            success=True,
+            message="Goods received successfully"
+        )
     
     # ============================================
     # Helper Methods
@@ -715,15 +723,22 @@ class PurchaseOrderService:
             )
             drug = result.scalar_one()
             
+            # Exclude ORM-specific attributes
+            item_dict = {k: v for k, v in item.__dict__.items() if not k.startswith('_')}
+            
             items_with_details.append(PurchaseOrderItemWithDetails(
-                **item.__dict__,
+                **item_dict,
                 drug_name=drug.name,
                 drug_sku=drug.sku,
                 drug_generic_name=drug.generic_name
             ))
         
+        # Exclude ORM-specific attributes when spreading po.__dict__
+        po_dict = {k: v for k, v in po.__dict__.items() if not k.startswith('_')}
+        po_dict.pop('items', None)  # Remove items key to avoid conflict
+        
         return PurchaseOrderWithDetails(
-            **po.__dict__,
+            **po_dict,
             items=items_with_details,
             supplier_name=po.supplier.name,
             branch_name=branch.name,
@@ -753,7 +768,7 @@ class PurchaseOrderService:
             created_at=datetime.now(timezone.utc)
         )
         db.add(log)
-        await db.commit()
+        # Do not commit here - let the caller handle transaction management
 
     @staticmethod
     async def add_purchase_order_items(
@@ -855,10 +870,7 @@ class PurchaseOrderService:
         po.total_amount = po.subtotal + po.tax_amount + (po.shipping_cost or Decimal('0'))
         po.updated_at = datetime.now(timezone.utc)
         
-        await db.commit()
-        await db.refresh(po)
-        
-        # Audit log
+        # Audit log before commit
         await PurchaseOrderService._create_audit_log(
             db,
             action='add_po_items',
@@ -882,6 +894,9 @@ class PurchaseOrderService:
                 'new_total': str(po.total_amount)
             }
         )
+        
+        await db.commit()
+        await db.refresh(po)
         
         return po
     
@@ -964,10 +979,7 @@ class PurchaseOrderService:
         po.total_amount = po.subtotal + po.tax_amount + (po.shipping_cost or Decimal('0'))
         po.updated_at = datetime.now(timezone.utc)
         
-        await db.commit()
-        await db.refresh(po)
-        
-        # Audit log
+        # Audit log before commit
         await PurchaseOrderService._create_audit_log(
             db,
             action='update_po_item',
@@ -993,6 +1005,9 @@ class PurchaseOrderService:
                 }
             }
         )
+        
+        await db.commit()
+        await db.refresh(po)
         
         return po
     

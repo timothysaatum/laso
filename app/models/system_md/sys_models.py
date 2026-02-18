@@ -128,7 +128,7 @@ class SystemAlert(Base, TimestampMixin):
         String(50),
         nullable=False,
         index=True,
-        comment="low_stock, expiry_warning, out_of_stock, system_error, security"
+        comment="low_stock, expiry_warning, out_of_stock, system_error, security, system_info"
     )
     
     severity: Mapped[str] = mapped_column(
@@ -172,7 +172,7 @@ class SystemAlert(Base, TimestampMixin):
     
     __table_args__ = (
         CheckConstraint(
-            "alert_type IN ('low_stock', 'expiry_warning', 'out_of_stock', 'system_error', 'security')",
+            "alert_type IN ('low_stock', 'expiry_warning', 'out_of_stock', 'system_error', 'security', 'system_info')",
             name='check_alert_type'
         ),
         CheckConstraint(

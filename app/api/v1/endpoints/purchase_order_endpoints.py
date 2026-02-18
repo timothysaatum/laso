@@ -344,19 +344,6 @@ async def receive_goods(
     ```
     """
     return await PurchaseOrderService.receive_goods(db, po_id, receive_data, current_user)
-
-
-@router.post(
-    "/{po_id}/items",
-    response_model=PurchaseOrderWithDetails,
-    dependencies=[Depends(require_permission("manage_inventory"))]
-)
-async def add_purchase_order_items(
-    po_id: uuid.UUID,
-    items: List[PurchaseOrderItemCreate],
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
     """
     Add items to an existing purchase order
     
