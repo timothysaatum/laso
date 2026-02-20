@@ -6,12 +6,6 @@ from sqlalchemy import TypeDecorator, String, Text
 import uuid
 import json
 
-# class UUIDEncoder(json.JSONEncoder):
-#     """Custom JSON encoder that handles UUID objects"""
-#     def default(self, obj):
-#         if isinstance(obj, uuid.UUID):
-#             return str(obj)
-#         return super().default(obj)
     
 class UUID(TypeDecorator):
     """Platform-independent UUID type.

@@ -115,9 +115,7 @@ class UserResponse(UserBase, TimestampSchema, SyncSchema):
     
     # Security: Never expose password hash or 2FA secret
     model_config = ConfigDict(
-        from_attributes=True,
-        # Explicitly exclude sensitive fields
-        exclude={'password_hash', 'two_factor_secret', 'permissions'}
+        from_attributes=True
     )
 
 

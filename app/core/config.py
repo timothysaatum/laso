@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # -------------------------
     # Security / Auth
     # -------------------------
-    SECRET_KEY: str
+    SECRET_KEY: str = ""
     ALGORITHM: str = "HS256"
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 150
@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     LOGIN_ATTEMPT_WINDOW_MINUTES: int = 15
     MAX_ACTIVE_SESSIONS: int = 5
 
-    SUPER_ADMIN_USER_NAME: str
-    SUPER_ADMIN_PASSWORD_HASH: str
+    SUPER_ADMIN_USER_NAME: str = ""
+    SUPER_ADMIN_PASSWORD_HASH: str = ""
     SUPER_ADMIN_TOKEN_EXPIRE_MINUTES: int = 60
     
     # Password Security
@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # -------------------------
     # Database
     # -------------------------
-    DATABASE_URL: str
+    DATABASE_URL: str = ""
     ALEMBIC_DB_URL: Optional[str] = None
 
     # -------------------------
@@ -73,11 +73,11 @@ class Settings(BaseSettings):
     # -------------------------
     # Email (SMTP)
     # -------------------------
-    SMTP_HOST: str
+    SMTP_HOST: str = ""
     SMTP_PORT: int = 587
-    SMTP_USER: str
-    SMTP_PASSWORD: str
-    FROM_EMAIL: str
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    FROM_EMAIL: str = ""
     FROM_NAME: str = "Laso System"
 
     # -------------------------
