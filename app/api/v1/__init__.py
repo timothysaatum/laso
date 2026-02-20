@@ -17,7 +17,7 @@ from .endpoints.sales_endpoints import router as sales_router
 from .endpoints.purchase_order_endpoints import router as purchase_order_router
 from .endpoints.purchase_order_endpoints import supplier_router as sr
 from .endpoints.stats import router as stats_router
-from .endpoints.price_contract_routes import router as price_contract_router
+from .endpoints.price_contract_endpoints import router as price_contract_router
 
 
 router.include_router(auth_router, tags=["Authentication"])

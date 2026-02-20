@@ -312,6 +312,21 @@ class SalesService:
                 ci.drug_id: ci for ci in result.scalars().all()
             }
             
+            # 9.1 Pre-fetch batches for FEFO pricing (First Expire, First Out)
+            drug_ids_in_sale = [item.drug_id for item in sale_data.items]
+            result = await db.execute(
+                select(DrugBatch).where(
+                    DrugBatch.branch_id == sale_data.branch_id,
+                    DrugBatch.drug_id.in_(drug_ids_in_sale),
+                    DrugBatch.remaining_quantity > 0,
+                    DrugBatch.expiry_date >= date.today()
+                ).order_by(DrugBatch.expiry_date.asc())  # FEFO: earliest expiry first
+            )
+            batches_by_drug = {}
+            for batch in result.scalars().all():
+                if batch.drug_id not in batches_by_drug:
+                    batches_by_drug[batch.drug_id] = batch  # First one is earliest expiry
+            
             # 10. Calculate per-item pricing using contract rules
             subtotal = Decimal('0')
             total_contract_discount = Decimal('0')
@@ -321,7 +336,16 @@ class SalesService:
             
             for item in sale_data.items:
                 drug = drugs[item.drug_id]
-                unit_price = Decimal(str(drug.unit_price))
+                
+                # Use batch selling price if available, otherwise cost_price, otherwise drug unit_price
+                batch = batches_by_drug.get(item.drug_id)
+                if batch and batch.selling_price:
+                    unit_price = Decimal(str(batch.selling_price))
+                elif batch and batch.cost_price:
+                    unit_price = Decimal(str(batch.cost_price))
+                else:
+                    unit_price = Decimal(str(drug.unit_price))
+                
                 tax_rate = Decimal(str(drug.tax_rate)) if getattr(drug, 'tax_rate', None) else Decimal('0')
                 item_subtotal = item.quantity * unit_price
                 
@@ -764,13 +788,12 @@ class SalesService:
             
             return ProcessSaleResponse(
                 sale=sale_with_details,
-                inventory_updated=inventory_updated,
-                batches_updated=batches_updated,
                 loyalty_points_awarded=points_earned,
-                low_stock_alerts_created=low_stock_alerts,
                 contract_applied=contract.contract_name,
                 contract_discount_given=total_contract_discount,
                 estimated_savings=total_contract_discount,
+                inventory_updated=inventory_updated,
+                batches_updated=batches_updated,
                 success=True,
                 message="Sale processed successfully"
             )

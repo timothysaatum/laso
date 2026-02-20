@@ -16,9 +16,8 @@ from app.schemas.purchase_order_schemas import (
     PurchaseOrderCreate, PurchaseOrderResponse, PurchaseOrderWithDetails,
     PurchaseOrderApprove, PurchaseOrderReject, ReceivePurchaseOrder, ReceivePurchaseOrderResponse
 )
-from app.schemas.syst_schemas import PaginationParams
 from app.services.sales.purchase_order_service import PurchaseOrderService
-from app.utils.pagination import PaginatedResponse, Paginator
+from app.utils.pagination import PaginatedResponse, Paginator, PaginationParams
 
 router = APIRouter(prefix="/purchase-orders", tags=["Purchase Orders"])
 supplier_router = APIRouter(prefix="/suppliers", tags=["Suppliers"])
@@ -81,7 +80,7 @@ async def get_supplier(
     response_model=PaginatedResponse[SupplierResponse]
 )
 async def list_suppliers(
-    pagination: PaginationParams = Depends(),
+    pagination: PaginationParams = Depends(PaginationParams),
     active_only: bool = Query(True, description="Show only active suppliers"),
     search: Optional[str] = Query(None, description="Search by name"),
     db: AsyncSession = Depends(get_db),
@@ -196,7 +195,7 @@ async def get_purchase_order(
     response_model=PaginatedResponse[PurchaseOrderResponse]
 )
 async def list_purchase_orders(
-    pagination: PaginationParams = Depends(),
+    pagination: PaginationParams = Depends(PaginationParams),
     branch_id: Optional[uuid.UUID] = Query(None),
     status: Optional[str] = Query(None),
     supplier_id: Optional[uuid.UUID] = Query(None),

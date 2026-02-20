@@ -19,8 +19,6 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     """
     Price contracts for insurance companies, corporate clients, and discount programs.
     
-    SIMPLIFIED MODEL - REMOVED:
-    - requires_approval field (no manager approval needed)
     - All approval-related functionality
     
     USAGE:
