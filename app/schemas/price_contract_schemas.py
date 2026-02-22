@@ -9,7 +9,7 @@ Features:
 - Advanced filtering
 """
 from pydantic import Field, model_validator, field_validator, ConfigDict
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Annotated
 from datetime import datetime, date, timedelta
 from decimal import Decimal
 import uuid
@@ -108,24 +108,25 @@ class PriceContractBase(BaseSchema):
         ge=0.0,
         description="Never go below this price even with discount (floor price)"
     )
-    
+
     maximum_discount_amount: Optional[Decimal] = Field(
         None,
         ge=0.0,
         description="Cap the discount amount per item (maximum savings)"
     )
-    
+
     minimum_purchase_amount: Optional[Decimal] = Field(
         None,
         ge=0.0,
         description="Minimum purchase amount to qualify for contract"
     )
-    
+
     maximum_purchase_amount: Optional[Decimal] = Field(
         None,
         ge=0.0,
         description="Maximum purchase amount for contract applicability"
     )
+
     
     # ============================================
     # BRANCH APPLICABILITY
