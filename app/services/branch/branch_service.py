@@ -348,14 +348,13 @@ class BranchService:
             )
         
         # Check for existing inventory
-        from app.models.inventory.inventory_model import Drug
+        from app.models.inventory.branch_inventory import BranchInventory
         result = await db.execute(
-            select(func.count(Drug.id)).where(
-                Drug.branch_id == branch_id,
-                Drug.is_deleted == False
+            select(func.count(BranchInventory.id)).where(
+                BranchInventory.branch_id == branch_id
             )
         )
-        inventory_count = result.scalar()
+        inventory_count = result.scalar() or 0
         if inventory_count > 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
