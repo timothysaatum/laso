@@ -18,6 +18,7 @@ from .endpoints.purchase_order_endpoints import router as purchase_order_router
 from .endpoints.purchase_order_endpoints import supplier_router as sr
 from .endpoints.stats import router as stats_router
 from .endpoints.price_contract_endpoints import router as price_contract_router
+from .endpoints.sync_endpoints import router as sync_router
 
 
 router.include_router(auth_router, tags=["Authentication"])
@@ -29,7 +30,7 @@ router.include_router(sales_router, tags=["Sales"])
 router.include_router(purchase_order_router, tags=["Purchase Orders"])
 router.include_router(sr, tags=["Suppliers"])
 router.include_router(stats_router, tags=["Statistics"])
-
+router.include_router(sync_router, tags=["Offline Sync"])
 router.include_router(price_contract_router, tags=["Price Contracts"])
 
 __all__ = ["router"]
