@@ -11,6 +11,7 @@ import uuid
 
 from app.models.core.mixins import SoftDeleteMixin, SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
 from app.models.pricing.pricing_model import PriceContract
+from app.schemas.base_schemas import Money
 if TYPE_CHECKING:
     from app.models.customer.customer_model import Customer
     from app.models.pharmacy.pharmacy_model import Branch 
@@ -614,10 +615,10 @@ class PurchaseOrder(Base, TimestampMixin, SyncTrackingMixin):
     )
     
     # Financial details
-    subtotal: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
-    tax_amount: Mapped[float] = mapped_column(Numeric(12, 2), default=0, nullable=False)
-    shipping_cost: Mapped[float] = mapped_column(Numeric(10, 2), default=0, nullable=False)
-    total_amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    subtotal: Mapped[Money] = mapped_column(Numeric(12, 2), nullable=False)
+    tax_amount: Mapped[Money] = mapped_column(Numeric(12, 2), default=0, nullable=False)
+    shipping_cost: Mapped[Money] = mapped_column(Numeric(10, 2), default=0, nullable=False)
+    total_amount: Mapped[Money] = mapped_column(Numeric(12, 2), nullable=False)
     
     # Status tracking
     status: Mapped[str] = mapped_column(
@@ -694,8 +695,8 @@ class PurchaseOrderItem(Base, TimestampMixin):
     quantity_ordered: Mapped[int] = mapped_column(Integer, nullable=False)
     quantity_received: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     
-    unit_cost: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
-    total_cost: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    unit_cost: Mapped[Money] = mapped_column(Numeric(10, 2), nullable=False)
+    total_cost: Mapped[Money] = mapped_column(Numeric(12, 2), nullable=False)
     
     # Batch information (filled upon receipt)
     batch_number: Mapped[Optional[str]] = mapped_column(String(100))

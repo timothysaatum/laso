@@ -326,7 +326,7 @@ async def activate_branch(
     branch = await BranchService.update_branch(
         db=db,
         branch_id=branch_id,
-        branch_data=BranchUpdate(is_active=True),
+        branch_data=BranchUpdate(is_active=True), # type: ignore
         organization_id=current_user.organization_id,
         updated_by_user_id=current_user.id
     )
@@ -356,7 +356,7 @@ async def deactivate_branch(
     branch = await BranchService.update_branch(
         db=db,
         branch_id=branch_id,
-        branch_data=BranchUpdate(is_active=False),
+        branch_data=BranchUpdate(is_active=False), # type: ignore
         organization_id=current_user.organization_id,
         updated_by_user_id=current_user.id
     )

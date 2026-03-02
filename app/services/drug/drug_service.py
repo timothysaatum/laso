@@ -2,6 +2,7 @@
 Drug Service
 Business logic for drug/product management
 """
+from app.schemas.base_schemas import Money
 from app.schemas.drugs_schemas import (
     BulkDrugUpdate, 
     DrugCreate,
@@ -297,8 +298,8 @@ class DrugService:
         drug_type: Optional[str] = None,
         requires_prescription: Optional[bool] = None,
         is_active: Optional[bool] = True,
-        min_price: Optional[float] = None,
-        max_price: Optional[float] = None,
+        min_price: Optional[Money] = None,
+        max_price: Optional[Money] = None,
         manufacturer: Optional[str] = None,
         supplier: Optional[str] = None,
         include_deleted: bool = False

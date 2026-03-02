@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     
     # Password Security
     MIN_PASSWORD_LENGTH: int = 8
-    ACCOUNT_LOCKOUT_DURATION_MINUTES: int = 30
+    ACCOUNT_LOCKOUT_DURATION_MINUTES: int = 5
     
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True

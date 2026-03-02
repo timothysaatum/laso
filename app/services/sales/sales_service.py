@@ -1,14 +1,6 @@
 """
 Sales Service
 Business logic for sales transactions, refunds, and customer purchases
-
-FIXED VERSION - Includes:
-- Customer allergy checking (CRITICAL)
-- FEFO batch tracking (CRITICAL)
-- Proper prescription verification
-- Correct loyalty points calculation
-- Automatic tier upgrades
-- Enhanced error handling
 """
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func

@@ -12,7 +12,6 @@ import uuid
 from app.db.dependencies import get_db
 from app.core.deps import (
     get_current_user,
-    require_any_role,
     require_role
 )
 from app.models.user.user_model import User
@@ -159,6 +158,10 @@ async def list_organizations(
     """
     # Build query
     query = select(Organization)
+
+    if current_user.role == "admin":
+        # Admins can only see their own organization
+        query = query.where(Organization.id == current_user.organization_id)
     
     # Apply filters
     filters = []
@@ -346,6 +349,14 @@ async def update_subscription(
     return organization
 
 
+@router.patch(
+    "/{organization_id}/settings",
+    response_model=OrganizationResponse,
+    summary="Update organization settings",
+    description="Update organization-specific settings. **Requires admin or super_admin role**",
+    dependencies=[Depends(require_role("admin", "super_admin"))]
+)
+
 @router.get(
     "/{organization_id}/stats",
     response_model=OrganizationStatsResponse,
@@ -487,13 +498,6 @@ async def get_organization_stats(
     )
 
 
-@router.patch(
-    "/{organization_id}/settings",
-    response_model=OrganizationResponse,
-    summary="Update organization settings",
-    description="Update organization-specific settings. **Requires admin or super_admin role**",
-    dependencies=[Depends(require_role("admin", "super_admin"))]
-)
 async def update_organization_settings(
     organization_id: uuid.UUID,
     settings_data: OrganizationSettingsUpdate,

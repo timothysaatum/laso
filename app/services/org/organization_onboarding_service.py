@@ -18,6 +18,7 @@ from app.models.pharmacy.pharmacy_model import Organization, Branch
 from app.models.user.user_model import User
 from app.models.system_md.sys_models import AuditLog
 from app.schemas.branch_schemas import BranchCreate, BranchAddress
+from app.utils.iso_dates import to_iso
 
 
 class OrganizationOnboardingService:
@@ -118,7 +119,7 @@ class OrganizationOnboardingService:
                 created_branches = [default_branch]
             
             # Update admin's assigned branches (assign to all created branches)
-            admin_user.assigned_branches = [str(branch.id) for branch in created_branches]
+            admin_user.assigned_branches = [branch.id for branch in created_branches]
             
             # Initialize organization settings
             await self._initialize_organization_settings(organization)
@@ -556,7 +557,7 @@ class OrganizationOnboardingService:
                 },
                 "after": {
                     "subscription_tier": subscription_tier,
-                    "subscription_expires_at": organization.subscription_expires_at.isoformat()
+                            "subscription_expires_at": to_iso(organization.subscription_expires_at)
                 }
             }
         )

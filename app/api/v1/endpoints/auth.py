@@ -1,7 +1,7 @@
 from app.services.auth.auth_service import AuthService
 from fastapi import APIRouter, Depends, HTTPException, status, Request
-from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import (
     get_db, get_current_user, get_current_active_user,
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register_user(
     user_data: UserCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("super_admin", "admin"))
 ):
     """
@@ -38,7 +38,7 @@ async def register_user(
 async def login(
     request: Request,
     login_data: LoginRequest,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Login and receive access tokens
@@ -67,7 +67,7 @@ async def login(
 async def refresh_token(
     request: Request,
     refresh_data: RefreshTokenRequest,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Refresh access token using refresh token
@@ -87,6 +87,12 @@ async def refresh_token(
     import uuid
     
     payload = decode_token(new_access_token)
+    if payload is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authentication credentials",
+        )
+    
     user_id = uuid.UUID(payload["sub"])
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -104,7 +110,7 @@ async def refresh_token(
 async def logout(
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Logout current session
@@ -129,7 +135,7 @@ async def logout(
 @router.post("/logout-all", status_code=status.HTTP_200_OK)
 async def logout_all_sessions(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Logout from all devices/sessions
@@ -163,7 +169,7 @@ async def get_current_user_info(
 async def change_password(
     password_data: PasswordChange,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Change user password
@@ -187,7 +193,7 @@ async def change_password(
 @router.get("/sessions")
 async def get_active_sessions(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Get all active sessions for current user

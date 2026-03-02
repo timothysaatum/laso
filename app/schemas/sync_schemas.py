@@ -33,7 +33,6 @@ from app.schemas.drugs_schemas import DrugResponse, DrugCategoryResponse
 from app.schemas.inventory_schemas import (
     BranchInventoryResponse,
     DrugBatchResponse,
-    StockAdjustmentResponse,
 )
 from app.schemas.price_contract_schemas import PriceContractResponse
 from app.schemas.customer_schemas import CustomerResponse

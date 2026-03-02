@@ -15,7 +15,7 @@ from datetime import datetime, date
 from decimal import Decimal
 import uuid
 
-from app.schemas.base_schemas import BaseSchema, Money, TimestampSchema, SyncSchema
+from app.schemas.base_schemas import BaseSchema, TimestampSchema, SyncSchema
 
 
 # ============================================
@@ -639,8 +639,6 @@ class ProcessSaleResponse(BaseSchema):
         default_factory=list,
         description="Non-critical warnings (e.g., low stock, near expiry)"
     )
-
-
 
 
 # ============================================

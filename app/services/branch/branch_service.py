@@ -369,33 +369,6 @@ class BranchService:
         
         await db.commit()
 
-    @staticmethod
-    async def get_branch_with_stats(
-        db: AsyncSession,
-        branch_id: uuid.UUID,
-        organization_id: uuid.UUID
-    ) -> Dict[str, Any]:
-        """Get branch with comprehensive statistics"""
-        branch = await BranchService.get_branch_by_id(db, branch_id, organization_id)
-        if not branch:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Branch not found"
-            )
-        
-        # Get statistics (implement based on your models)
-        # This is a placeholder - adjust based on your actual models
-        stats = {
-            'branch': branch,
-            'total_inventory_items': 0,
-            'total_inventory_value': 0.0,
-            'low_stock_count': 0,
-            'total_sales_today': 0.0,
-            'total_sales_month': 0.0,
-            'active_users_count': 0
-        }
-        
-        return stats
 
     @staticmethod
     async def assign_user_to_branches(
@@ -443,3 +416,31 @@ class BranchService:
         await db.refresh(user)
         
         return user
+    
+    @staticmethod
+    async def get_branch_with_stats(
+        db: AsyncSession,
+        branch_id: uuid.UUID,
+        organization_id: uuid.UUID
+    ) -> Dict[str, Any]:
+        """Get branch with comprehensive statistics"""
+        branch = await BranchService.get_branch_by_id(db, branch_id, organization_id)
+        if not branch:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Branch not found"
+            )
+        
+        # Get statistics (implement based on your models)
+        # This is a placeholder - adjust based on your actual models
+        stats = {
+            'branch': branch,
+            'total_inventory_items': 0,
+            'total_inventory_value': 0.0,
+            'low_stock_count': 0,
+            'total_sales_today': 0.0,
+            'total_sales_month': 0.0,
+            'active_users_count': 0
+        }
+        
+        return stats

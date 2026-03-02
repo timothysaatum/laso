@@ -2,7 +2,7 @@
 Purchase Order Service
 Business logic for purchase orders, receiving goods, and supplier management
 """
-from typing import List
+from typing import List, cast
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
@@ -18,6 +18,7 @@ from app.models.pharmacy.pharmacy_model import Branch
 from app.models.user.user_model import User
 from app.models.system_md.sys_models import AuditLog
 
+from app.schemas.base_schemas import Money
 from app.schemas.purchase_order_schemas import (
     PurchaseOrderItemCreate, SupplierCreate, PurchaseOrderCreate, PurchaseOrderWithDetails,
     ReceivePurchaseOrder, ReceivePurchaseOrderResponse,
@@ -754,7 +755,7 @@ class PurchaseOrderService:
         entity_id: uuid.UUID,
         user_id: uuid.UUID,
         organization_id: uuid.UUID,
-        changes: dict = None
+        changes: dict = {}
     ):
         """Create audit log entry"""
         log = AuditLog(
@@ -865,7 +866,7 @@ class PurchaseOrderService:
         )
         all_items = list(all_items_result.scalars().all()) + new_items
         
-        po.subtotal = sum(item.total_cost for item in all_items)
+        po.__setattr__('subtotal', sum((item.total_cost for item in all_items), Decimal('0')))
         po.tax_amount = po.subtotal * Decimal('0.0')  # Configure tax rate as needed
         po.total_amount = po.subtotal + po.tax_amount + (po.shipping_cost or Decimal('0'))
         po.updated_at = datetime.now(timezone.utc)
@@ -974,7 +975,7 @@ class PurchaseOrderService:
         )
         all_items = all_items_result.scalars().all()
         
-        po.subtotal = sum(i.total_cost for i in all_items)
+        po.subtotal = cast('Money', sum((item.total_cost for item in all_items), Decimal('0')))
         po.tax_amount = po.subtotal * Decimal('0.0')
         po.total_amount = po.subtotal + po.tax_amount + (po.shipping_cost or Decimal('0'))
         po.updated_at = datetime.now(timezone.utc)

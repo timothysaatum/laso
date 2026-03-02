@@ -77,12 +77,15 @@ class BranchBase(BaseSchema):
     
     @field_validator('code')
     @classmethod
-    def validate_code(cls, v: str) -> str:
-        """Validate branch code format"""
-        # Allow letters, numbers, hyphens, underscores
+    def validate_code(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+
         if not re.match(r'^[A-Z0-9\-_]+$', v, re.IGNORECASE):
-            raise ValueError('Branch code must contain only letters, numbers, hyphens, and underscores')
-        return v.upper()  # Standardize to uppercase
+            raise ValueError(
+                'Branch code must contain only letters, numbers, hyphens, and underscores'
+            )
+        return v.upper()
     
     @field_validator('phone')
     @classmethod
@@ -115,12 +118,14 @@ class BranchUpdate(BaseSchema):
     @field_validator('code')
     @classmethod
     def validate_code(cls, v: Optional[str]) -> Optional[str]:
-        """Validate branch code format"""
-        if v:
-            if not re.match(r'^[A-Z0-9\-_]+$', v, re.IGNORECASE):
-                raise ValueError('Branch code must contain only letters, numbers, hyphens, and underscores')
-            return v.upper()
-        return v
+        if v is None:
+            return v
+
+        if not re.match(r'^[A-Z0-9\-_]+$', v, re.IGNORECASE):
+            raise ValueError(
+                'Branch code must contain only letters, numbers, hyphens, and underscores'
+            )
+        return v.upper()
 
 
 class BranchResponse(BranchBase, TimestampSchema, SyncSchema):

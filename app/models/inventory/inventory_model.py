@@ -13,6 +13,7 @@ from typing import Optional, List, TYPE_CHECKING
 import uuid
 
 from app.models.core.mixins import SoftDeleteMixin, SyncTrackingMixin, TimestampMixin
+from app.schemas.base_schemas import Money
 if TYPE_CHECKING:
     from app.models.inventory.branch_inventory import BranchInventory, DrugBatch
     from app.models.pharmacy.pharmacy_model import Organization
@@ -175,14 +176,14 @@ class Drug(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     )
     
     # Pricing (stored as Decimal for precision)
-    unit_price: Mapped[float] = mapped_column(
+    unit_price: Mapped[Money] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         index=True,
         comment="Selling price per unit"
     )
     
-    cost_price: Mapped[Optional[float]] = mapped_column(
+    cost_price: Mapped[Optional[Money]] = mapped_column(
         Numeric(10, 2),
         comment="Cost/acquisition price per unit"
     )

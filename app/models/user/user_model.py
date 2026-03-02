@@ -1,14 +1,13 @@
 from app.db.base import Base
 from sqlalchemy import (
     String, Integer, Boolean, DateTime, Text, 
-    ForeignKey, Index, CheckConstraint, text
+    ForeignKey, Index, CheckConstraint
 )
 from app.models.db_types import UUID, ARRAY, INET, JSONB
 from sqlalchemy.orm import (
     Mapped, mapped_column, relationship,
     validates
 )
-from sqlalchemy.ext.hybrid import hybrid_method
 from app.models.core.mixins import pwd_context
 from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime, timezone
