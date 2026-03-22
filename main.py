@@ -482,7 +482,7 @@ if __name__ == "__main__":
     
     # Determine host and port
     host = "0.0.0.0" if settings.ENVIRONMENT == "production" else "127.0.0.1"
-    port = 9000
+    port = 8000
     
     # Determine reload behavior
     reload = settings.ENVIRONMENT != "production"

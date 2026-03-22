@@ -1,87 +1,125 @@
 """
 Inventory Service
-Business logic for inventory management, stock adjustments, and transfers
+=================
+Business logic for branch inventory, batch tracking, stock adjustments,
+inter-branch transfers, and reporting.
+
+Design principles
+-----------------
+* ``adjust_inventory`` and all write paths use ``SELECT ... FOR UPDATE``
+  row-level locks so concurrent requests cannot produce lost updates or
+  negative-stock races.
+* ``transfer_stock`` is fully atomic: both the source deduction and destination
+  credit run inside a single ``begin_nested()`` savepoint.  A failure on
+  either side rolls back both writes before any commit is issued.
+* ``create_batch`` **adds** the incoming quantity to ``BranchInventory``
+  (additive receipt).  It never overwrites existing stock.
+* ``consume_from_batch`` keeps ``DrugBatch.remaining_quantity`` and
+  ``BranchInventory.quantity`` in sync by updating both in the same
+  transaction.
+* ``adjustment_type`` is validated against the model's ``CheckConstraint``
+  allowlist before any DB write, producing a clean 400 rather than an
+  unhandled ``IntegrityError``.
+* All sync tracking uses ``mark_as_pending_sync()`` from
+  ``SyncTrackingMixin``, which safely initialises ``sync_version`` to 1 on
+  new unsaved objects instead of crashing with ``NoneType += 1``.
+* Batch expiry boundary in dispensing-path queries uses ``> date.today()``
+  (strictly future), consistent with the sales service.  Reporting queries
+  use ``>= date.today()`` so items expiring today appear in warnings.
 """
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
-from sqlalchemy.orm import joinedload
-from fastapi import HTTPException, status
-from typing import List, Optional, Tuple
-from datetime import datetime, timezone, date, timedelta
-from decimal import Decimal
+from __future__ import annotations
+
+import logging
 import uuid
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
+from typing import List, Optional, Tuple
+
+from fastapi import HTTPException, status
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.models.inventory.branch_inventory import (
-    BranchInventory, DrugBatch, StockAdjustment
+    BranchInventory,
+    DrugBatch,
+    StockAdjustment,
 )
 from app.models.inventory.inventory_model import Drug
 from app.schemas.inventory_schemas import (
-    BranchInventoryWithDetails, DrugBatchCreate, DrugBatchResponse,
-    LowStockItem, LowStockReport,
-    ExpiringBatchItem, ExpiringBatchReport,
-    InventoryValuationItem, InventoryValuationResponse
+    BranchInventoryWithDetails,
+    DrugBatchCreate,
+    DrugBatchResponse,
+    ExpiringBatchItem,
+    ExpiringBatchReport,
+    InventoryValuationItem,
+    InventoryValuationResponse,
+    LowStockItem,
+    LowStockReport,
 )
 from app.utils.pagination import PaginatedResponse, PaginationParams
 
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Model constraint: StockAdjustment.adjustment_type
+# Must stay in sync with the CheckConstraint in branch_inventory.py
+# ---------------------------------------------------------------------------
+_VALID_ADJUSTMENT_TYPES: frozenset[str] = frozenset(
+    {"damage", "expired", "theft", "return", "correction", "transfer"}
+)
+
 
 class InventoryService:
-    """Service for inventory management"""
-    
+    """Stateless service for inventory management."""
+
+    # =========================================================================
+    # READ — Branch inventory
+    # =========================================================================
+
     @staticmethod
     async def get_branch_inventory(
         db: AsyncSession,
         branch_id: uuid.UUID,
         drug_id: Optional[uuid.UUID] = None,
-        include_zero_stock: bool = False
+        include_zero_stock: bool = False,
     ) -> List[BranchInventory]:
         """
-        Get inventory for a branch (non-paginated - for internal use)
-        
-        Args:
-            db: Database session
-            branch_id: Branch ID
-            drug_id: Optional drug ID to filter
-            include_zero_stock: Include items with zero quantity
-            
-        Returns:
-            List of BranchInventory objects
+        Return inventory rows for a branch (non-paginated, for internal use).
         """
         query = select(BranchInventory).where(
             BranchInventory.branch_id == branch_id
         )
-        
         if drug_id:
             query = query.where(BranchInventory.drug_id == drug_id)
-        
         if not include_zero_stock:
             query = query.where(BranchInventory.quantity > 0)
-        
+
         result = await db.execute(query)
         return list(result.scalars().all())
-    
+
     @staticmethod
     async def get_branch_inventory_paginated(
         db: AsyncSession,
         branch_id: uuid.UUID,
-        pagination: 'PaginationParams',
+        pagination: PaginationParams,
         drug_id: Optional[uuid.UUID] = None,
         include_zero_stock: bool = False,
         search: Optional[str] = None,
-        low_stock_only: bool = False
-    ) -> 'PaginatedResponse[BranchInventoryWithDetails]':
+        low_stock_only: bool = False,
+    ) -> PaginatedResponse[BranchInventoryWithDetails]:
         """
-        Get paginated inventory for a branch with drug and branch details joined.
-        Returns BranchInventoryWithDetails so the frontend receives drug_name,
-        drug_sku, drug_unit_price, branch_name, branch_code.
+        Paginated inventory for a branch with joined drug and branch details.
+
+        Supports free-text search across drug name, generic name, SKU and
+        barcode, plus a ``low_stock_only`` flag that filters to rows where
+        ``quantity <= Drug.reorder_level``.
         """
         from app.models.pharmacy.pharmacy_model import Branch
-        from app.schemas.inventory_schemas import BranchInventoryWithDetails
 
-        # Always join Drug and Branch — we need them for WithDetails fields
-        # and for search/low_stock filtering.
         query = (
             select(BranchInventory)
-            .join(Drug, BranchInventory.drug_id == Drug.id)
+            .join(Drug,   BranchInventory.drug_id   == Drug.id)
             .join(Branch, BranchInventory.branch_id == Branch.id)
             .options(
                 joinedload(BranchInventory.drug),
@@ -98,11 +136,11 @@ class InventoryService:
         )
 
         if drug_id:
-            query = query.where(BranchInventory.drug_id == drug_id)
+            query      = query.where(BranchInventory.drug_id == drug_id)
             count_base = count_base.where(BranchInventory.drug_id == drug_id)
 
         if not include_zero_stock:
-            query = query.where(BranchInventory.quantity > 0)
+            query      = query.where(BranchInventory.quantity > 0)
             count_base = count_base.where(BranchInventory.quantity > 0)
 
         if search:
@@ -113,30 +151,28 @@ class InventoryService:
                 Drug.sku.ilike(pattern),
                 Drug.barcode.ilike(pattern),
             )
-            query = query.where(cond)
+            query      = query.where(cond)
             count_base = count_base.where(cond)
 
         if low_stock_only:
-            query = query.where(BranchInventory.quantity <= Drug.reorder_level)
+            query      = query.where(BranchInventory.quantity <= Drug.reorder_level)
             count_base = count_base.where(BranchInventory.quantity <= Drug.reorder_level)
 
         query = query.order_by(Drug.name)
 
-        # Count
         total: int = (await db.execute(count_base)).scalar_one()
-
-        # Paginate
-        offset = (pagination.page - 1) * pagination.page_size
-        rows = list(
+        offset      = (pagination.page - 1) * pagination.page_size
+        rows        = list(
             (await db.execute(query.offset(offset).limit(pagination.page_size)))
-            .scalars().unique().all()
+            .scalars()
+            .unique()
+            .all()
         )
 
-        # Build WithDetails items by reading joined relationships
         items: List[BranchInventoryWithDetails] = []
         for inv in rows:
-            drug: Drug = inv.drug
-            branch: Branch = inv.branch
+            drug: Drug             = inv.drug
+            branch                 = inv.branch
             items.append(
                 BranchInventoryWithDetails(
                     id=inv.id,
@@ -149,9 +185,6 @@ class InventoryService:
                     updated_at=inv.updated_at,
                     sync_version=inv.sync_version,
                     sync_status=inv.sync_status,
-                    # last_synced_at=inv.last_synced_at,
-                    # sync_hash=inv.sync_hash,
-                    # WithDetails fields populated from joined rows
                     drug_name=drug.name,
                     drug_sku=drug.sku,
                     drug_unit_price=Decimal(str(drug.unit_price)),
@@ -161,7 +194,6 @@ class InventoryService:
             )
 
         total_pages = max(1, -(-total // pagination.page_size))
-
         return PaginatedResponse(
             items=items,
             total=total,
@@ -171,47 +203,52 @@ class InventoryService:
             has_next=pagination.page < total_pages,
             has_prev=pagination.page > 1,
         )
-    
+
+    # =========================================================================
+    # WRITE — Inventory management
+    # =========================================================================
+
     @staticmethod
-    async def create_or_update_inventory(
+    async def set_inventory(
         db: AsyncSession,
         branch_id: uuid.UUID,
         drug_id: uuid.UUID,
         quantity: int,
-        location: Optional[str] = None
+        location: Optional[str] = None,
     ) -> BranchInventory:
         """
-        Create or update branch inventory
-        
-        Args:
-            db: Database session
-            branch_id: Branch ID
-            drug_id: Drug ID
-            quantity: Quantity to set
-            location: Optional storage location
-            
-        Returns:
-            BranchInventory object
+        Administrative SET operation: overwrite the inventory count.
+
+        This is for manual corrections (e.g. stocktake reconciliation).
+        To add stock from a goods receipt, use ``create_batch`` instead —
+        that method is additive.
+
+        Raises:
+            HTTPException(400): quantity is negative.
         """
-        # Check if inventory already exists
-        result = await db.execute(
-            select(BranchInventory).where(
-                BranchInventory.branch_id == branch_id,
-                BranchInventory.drug_id == drug_id
+        if quantity < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Inventory quantity cannot be negative.",
             )
+
+        result = await db.execute(
+            select(BranchInventory)
+            .where(
+                BranchInventory.branch_id == branch_id,
+                BranchInventory.drug_id   == drug_id,
+            )
+            .with_for_update()
         )
         inventory = result.scalar_one_or_none()
-        
+
         if inventory:
-            # Update existing
             inventory.quantity = quantity
             if location:
                 inventory.location = location
             inventory.updated_at = datetime.now(timezone.utc)
-            inventory.sync_status = 'pending'
-            inventory.sync_version += 1
+            inventory.mark_as_pending_sync()
         else:
-            # Create new
             inventory = BranchInventory(
                 id=uuid.uuid4(),
                 branch_id=branch_id,
@@ -221,16 +258,14 @@ class InventoryService:
                 location=location,
                 created_at=datetime.now(timezone.utc),
                 updated_at=datetime.now(timezone.utc),
-                sync_status='pending',
-                sync_version=1
             )
+            inventory.mark_as_pending_sync()
             db.add(inventory)
-        
+
         await db.commit()
         await db.refresh(inventory)
-        
         return inventory
-    
+
     @staticmethod
     async def adjust_inventory(
         db: AsyncSession,
@@ -240,54 +275,822 @@ class InventoryService:
         adjustment_type: str,
         reason: str,
         adjusted_by: uuid.UUID,
-        transfer_to_branch_id: Optional[uuid.UUID] = None
+        transfer_to_branch_id: Optional[uuid.UUID] = None,
     ) -> Tuple[StockAdjustment, BranchInventory]:
         """
-        Adjust inventory with audit trail
-        
+        Apply a signed quantity change with a full audit trail.
+
+        Acquires a ``SELECT ... FOR UPDATE`` row lock to prevent race
+        conditions under concurrent load.  ``adjustment_type`` is validated
+        against the model's CheckConstraint before any write.
+
         Args:
-            db: Database session
-            branch_id: Branch ID
-            drug_id: Drug ID
-            quantity_change: Change in quantity (negative for reductions)
-            adjustment_type: Type of adjustment
-            reason: Reason for adjustment
-            adjusted_by: User ID making adjustment
-            transfer_to_branch_id: For transfers only
-            
-        Returns:
-            Tuple of (StockAdjustment, updated BranchInventory)
-            
+            quantity_change: Positive to add, negative to remove.
+            adjustment_type: One of 'damage', 'expired', 'theft', 'return',
+                             'correction', 'transfer'.
+            transfer_to_branch_id: Required when adjustment_type='transfer'.
+
         Raises:
-            HTTPException: If validation fails
+            HTTPException(400): Invalid type, would result in negative stock,
+                                or transfer missing destination.
+            HTTPException(404): No inventory record for this drug at the branch.
         """
-        # Get current inventory
-        result = await db.execute(
-            select(BranchInventory).where(
-                BranchInventory.branch_id == branch_id,
-                BranchInventory.drug_id == drug_id
+        if adjustment_type not in _VALID_ADJUSTMENT_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid adjustment type '{adjustment_type}'. "
+                    f"Must be one of: {sorted(_VALID_ADJUSTMENT_TYPES)}."
+                ),
             )
+
+        if adjustment_type == "transfer" and not transfer_to_branch_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="transfer_to_branch_id is required for transfer adjustments.",
+            )
+
+        async with db.begin_nested():
+            adjustment, inventory = await InventoryService._apply_adjustment(
+                db=db,
+                branch_id=branch_id,
+                drug_id=drug_id,
+                quantity_change=quantity_change,
+                adjustment_type=adjustment_type,
+                reason=reason,
+                adjusted_by=adjusted_by,
+                transfer_to_branch_id=transfer_to_branch_id,
+            )
+
+        await db.commit()
+        await db.refresh(adjustment)
+        await db.refresh(inventory)
+        return adjustment, inventory
+
+    @staticmethod
+    async def transfer_stock(
+        db: AsyncSession,
+        from_branch_id: uuid.UUID,
+        to_branch_id: uuid.UUID,
+        drug_id: uuid.UUID,
+        quantity: int,
+        reason: str,
+        transferred_by: uuid.UUID,
+    ) -> Tuple[StockAdjustment, StockAdjustment]:
+        """
+        Transfer stock between branches atomically.
+
+        Both the source deduction and the destination credit are written inside
+        a single savepoint.  If either write fails, neither is committed.
+
+        Raises:
+            HTTPException(400): Same-branch, non-positive quantity, or
+                                insufficient available stock.
+            HTTPException(404): Drug not found in the source branch.
+        """
+        if from_branch_id == to_branch_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source and destination branches must be different.",
+            )
+
+        if quantity <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Transfer quantity must be positive.",
+            )
+
+        async with db.begin_nested():  # savepoint — both sides or neither
+            # -- Pre-flight: check available stock at source with a lock -------
+            src_res = await db.execute(
+                select(BranchInventory)
+                .where(
+                    BranchInventory.branch_id == from_branch_id,
+                    BranchInventory.drug_id   == drug_id,
+                )
+                .with_for_update()
+            )
+            source_inventory = src_res.scalar_one_or_none()
+            if not source_inventory:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Drug not found in source branch inventory.",
+                )
+
+            available = source_inventory.quantity - source_inventory.reserved_quantity
+            if available < quantity:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Insufficient available stock. "
+                        f"Available: {available}, Requested: {quantity}."
+                    ),
+                )
+
+            # -- Ensure destination inventory record exists -------------------
+            dst_res = await db.execute(
+                select(BranchInventory)
+                .where(
+                    BranchInventory.branch_id == to_branch_id,
+                    BranchInventory.drug_id   == drug_id,
+                )
+                .with_for_update()
+            )
+            if not dst_res.scalar_one_or_none():
+                dest = BranchInventory(
+                    id=uuid.uuid4(),
+                    branch_id=to_branch_id,
+                    drug_id=drug_id,
+                    quantity=0,
+                    reserved_quantity=0,
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+                dest.mark_as_pending_sync()
+                db.add(dest)
+                await db.flush()  # persist so _apply_adjustment can find it
+
+            # -- Deduct from source -------------------------------------------
+            source_adjustment, _ = await InventoryService._apply_adjustment(
+                db=db,
+                branch_id=from_branch_id,
+                drug_id=drug_id,
+                quantity_change=-quantity,
+                adjustment_type="transfer",
+                reason=f"Transfer to branch {to_branch_id}: {reason}",
+                adjusted_by=transferred_by,
+                transfer_to_branch_id=to_branch_id,
+            )
+
+            # -- Credit destination -------------------------------------------
+            dest_adjustment, _ = await InventoryService._apply_adjustment(
+                db=db,
+                branch_id=to_branch_id,
+                drug_id=drug_id,
+                quantity_change=quantity,
+                adjustment_type="transfer",
+                reason=f"Transfer from branch {from_branch_id}: {reason}",
+                adjusted_by=transferred_by,
+            )
+
+        # Both sides succeeded — commit once
+        await db.commit()
+        await db.refresh(source_adjustment)
+        await db.refresh(dest_adjustment)
+        return source_adjustment, dest_adjustment
+
+    @staticmethod
+    async def reserve_inventory(
+        db: AsyncSession,
+        branch_id: uuid.UUID,
+        drug_id: uuid.UUID,
+        quantity: int,
+    ) -> BranchInventory:
+        """
+        Reserve stock for a pending order or prescription.
+
+        Acquires a row lock and validates that sufficient unreserved stock
+        exists before incrementing ``reserved_quantity``.
+
+        Raises:
+            HTTPException(400): Insufficient available (unreserved) stock.
+            HTTPException(404): No inventory record at this branch.
+        """
+        result = await db.execute(
+            select(BranchInventory)
+            .where(
+                BranchInventory.branch_id == branch_id,
+                BranchInventory.drug_id   == drug_id,
+            )
+            .with_for_update()
         )
         inventory = result.scalar_one_or_none()
-        
         if not inventory:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Inventory record not found for this drug at this branch"
+                detail="Inventory record not found.",
             )
-        
-        # Calculate new quantity
+
+        available = inventory.quantity - inventory.reserved_quantity
+        if available < quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Insufficient available stock. "
+                    f"Available: {available}, Requested: {quantity}."
+                ),
+            )
+
+        inventory.reserved_quantity += quantity
+        inventory.updated_at = datetime.now(timezone.utc)
+        inventory.mark_as_pending_sync()
+
+        await db.commit()
+        await db.refresh(inventory)
+        return inventory
+
+    @staticmethod
+    async def release_reserved_inventory(
+        db: AsyncSession,
+        branch_id: uuid.UUID,
+        drug_id: uuid.UUID,
+        quantity: int,
+    ) -> BranchInventory:
+        """
+        Release previously reserved stock (e.g. order cancelled).
+
+        Raises:
+            HTTPException(400): Releasing more than is currently reserved.
+            HTTPException(404): No inventory record at this branch.
+        """
+        result = await db.execute(
+            select(BranchInventory)
+            .where(
+                BranchInventory.branch_id == branch_id,
+                BranchInventory.drug_id   == drug_id,
+            )
+            .with_for_update()
+        )
+        inventory = result.scalar_one_or_none()
+        if not inventory:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Inventory record not found.",
+            )
+
+        if inventory.reserved_quantity < quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Cannot release {quantity} units — only "
+                    f"{inventory.reserved_quantity} are reserved."
+                ),
+            )
+
+        inventory.reserved_quantity -= quantity
+        inventory.updated_at = datetime.now(timezone.utc)
+        inventory.mark_as_pending_sync()
+
+        await db.commit()
+        await db.refresh(inventory)
+        return inventory
+
+    # =========================================================================
+    # BATCH MANAGEMENT
+    # =========================================================================
+
+    @staticmethod
+    async def create_batch(
+        db: AsyncSession,
+        batch_data: DrugBatchCreate,
+    ) -> DrugBatch:
+        """
+        Create a drug batch and **add** its quantity to ``BranchInventory``.
+
+        This is an additive goods-receipt operation.  If an inventory record
+        already exists, the incoming quantity is added to it.  If not, a new
+        record is created.
+
+        The batch creation and inventory update are committed together in a
+        single savepoint.
+
+        Raises:
+            HTTPException(400): A batch with the same number already exists
+                                for this drug at this branch.
+        """
+        # Duplicate batch check
+        result = await db.execute(
+            select(DrugBatch).where(
+                DrugBatch.branch_id    == batch_data.branch_id,
+                DrugBatch.drug_id      == batch_data.drug_id,
+                DrugBatch.batch_number == batch_data.batch_number,
+            )
+        )
+        if result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Batch '{batch_data.batch_number}' already exists "
+                    "for this drug at this branch."
+                ),
+            )
+
+        async with db.begin_nested():
+            # Create the batch
+            batch = DrugBatch(
+                id=uuid.uuid4(),
+                **batch_data.model_dump(),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            batch.mark_as_pending_sync()
+            db.add(batch)
+            await db.flush()  # get batch.id before touching inventory
+
+            # ADD incoming quantity to BranchInventory (never overwrite)
+            inv_res = await db.execute(
+                select(BranchInventory)
+                .where(
+                    BranchInventory.branch_id == batch_data.branch_id,
+                    BranchInventory.drug_id   == batch_data.drug_id,
+                )
+                .with_for_update()
+            )
+            inventory = inv_res.scalar_one_or_none()
+
+            if inventory:
+                inventory.quantity  += batch_data.quantity
+                inventory.updated_at = datetime.now(timezone.utc)
+                inventory.mark_as_pending_sync()
+            else:
+                inventory = BranchInventory(
+                    id=uuid.uuid4(),
+                    branch_id=batch_data.branch_id,
+                    drug_id=batch_data.drug_id,
+                    quantity=batch_data.quantity,
+                    reserved_quantity=0,
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+                inventory.mark_as_pending_sync()
+                db.add(inventory)
+
+        await db.commit()
+        await db.refresh(batch)
+        return batch
+
+    @staticmethod
+    async def consume_from_batch(
+        db: AsyncSession,
+        batch_id: uuid.UUID,
+        quantity: int,
+    ) -> DrugBatch:
+        """
+        Consume stock from a specific batch, keeping ``BranchInventory`` in sync.
+
+        Both ``DrugBatch.remaining_quantity`` and ``BranchInventory.quantity``
+        are decremented atomically in the same savepoint.
+
+        Raises:
+            HTTPException(400): Batch has insufficient remaining quantity.
+            HTTPException(404): Batch not found or no inventory record.
+        """
+        async with db.begin_nested():
+            batch_res = await db.execute(
+                select(DrugBatch)
+                .where(DrugBatch.id == batch_id)
+                .with_for_update()
+            )
+            batch = batch_res.scalar_one_or_none()
+            if not batch:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Batch not found.",
+                )
+
+            if batch.remaining_quantity < quantity:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Insufficient batch quantity. "
+                        f"Available: {batch.remaining_quantity}, "
+                        f"Requested: {quantity}."
+                    ),
+                )
+
+            batch.remaining_quantity -= quantity
+            batch.updated_at          = datetime.now(timezone.utc)
+            batch.mark_as_pending_sync()
+
+            # Keep BranchInventory in sync
+            inv_res = await db.execute(
+                select(BranchInventory)
+                .where(
+                    BranchInventory.branch_id == batch.branch_id,
+                    BranchInventory.drug_id   == batch.drug_id,
+                )
+                .with_for_update()
+            )
+            inventory = inv_res.scalar_one_or_none()
+            if not inventory:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=(
+                        "BranchInventory record missing for this drug. "
+                        "Data integrity issue — contact an administrator."
+                    ),
+                )
+
+            inventory.quantity  -= quantity
+            inventory.updated_at = datetime.now(timezone.utc)
+            inventory.mark_as_pending_sync()
+
+        await db.commit()
+        await db.refresh(batch)
+        return batch
+
+    @staticmethod
+    async def get_batches_for_drug(
+        db: AsyncSession,
+        drug_id: uuid.UUID,
+        branch_id: Optional[uuid.UUID] = None,
+        include_expired: bool = False,
+        include_empty: bool = False,
+    ) -> List[DrugBatch]:
+        """
+        Return batches for a drug (non-paginated, for internal use).
+
+        Defaults to non-expired (``expiry_date > today``), non-empty batches
+        ordered FEFO (earliest expiry first).
+        """
+        query = select(DrugBatch).where(DrugBatch.drug_id == drug_id)
+
+        if branch_id:
+            query = query.where(DrugBatch.branch_id == branch_id)
+
+        if not include_expired:
+            # Strictly future — consistent with the sales service
+            query = query.where(DrugBatch.expiry_date > date.today())
+
+        if not include_empty:
+            query = query.where(DrugBatch.remaining_quantity > 0)
+
+        query = query.order_by(DrugBatch.expiry_date, DrugBatch.created_at)
+
+        result = await db.execute(query)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def get_batches_paginated(
+        db: AsyncSession,
+        drug_id: uuid.UUID,
+        pagination: PaginationParams,
+        branch_id: Optional[uuid.UUID] = None,
+        include_expired: bool = False,
+        include_empty: bool = False,
+        expiring_within_days: Optional[int] = None,
+    ) -> PaginatedResponse[DrugBatch]:
+        """
+        Paginated batch listing for a drug, ordered FEFO.
+
+        ``expiring_within_days`` filters to batches expiring within N days
+        from today (exclusive of already-expired).
+        """
+        from app.utils.pagination import Paginator
+
+        query       = select(DrugBatch).where(DrugBatch.drug_id == drug_id)
+        count_query = (
+            select(func.count()).select_from(DrugBatch).where(DrugBatch.drug_id == drug_id)
+        )
+
+        if branch_id:
+            query       = query.where(DrugBatch.branch_id == branch_id)
+            count_query = count_query.where(DrugBatch.branch_id == branch_id)
+
+        if not include_expired:
+            query       = query.where(DrugBatch.expiry_date > date.today())
+            count_query = count_query.where(DrugBatch.expiry_date > date.today())
+
+        if not include_empty:
+            query       = query.where(DrugBatch.remaining_quantity > 0)
+            count_query = count_query.where(DrugBatch.remaining_quantity > 0)
+
+        if expiring_within_days is not None:
+            expiry_threshold = date.today() + timedelta(days=expiring_within_days)
+            window_cond = and_(
+                DrugBatch.expiry_date > date.today(),
+                DrugBatch.expiry_date <= expiry_threshold,
+            )
+            query       = query.where(window_cond)
+            count_query = count_query.where(window_cond)
+
+        query = query.order_by(DrugBatch.expiry_date, DrugBatch.created_at)
+
+        paginator = Paginator(db)
+        return await paginator.paginate_raw_query(
+            query=query,
+            count_query=count_query,
+            params=pagination,
+            schema=DrugBatchResponse,
+        )
+
+    # =========================================================================
+    # REPORTS
+    # =========================================================================
+
+    @staticmethod
+    async def get_low_stock_report(
+        db: AsyncSession,
+        organization_id: uuid.UUID,
+        branch_id: Optional[uuid.UUID] = None,
+    ) -> LowStockReport:
+        """
+        Generate a low-stock / out-of-stock report for an organisation.
+
+        Includes every active drug whose ``BranchInventory.quantity`` is at
+        or below its ``Drug.reorder_level``.
+        """
+        from app.models.pharmacy.pharmacy_model import Branch
+
+        query = (
+            select(
+                Drug.id.label("drug_id"),
+                Drug.name.label("drug_name"),
+                Drug.sku,
+                Drug.reorder_level,
+                Drug.reorder_quantity,
+                BranchInventory.branch_id,
+                Branch.name.label("branch_name"),
+                BranchInventory.quantity,
+            )
+            .join(BranchInventory, Drug.id == BranchInventory.drug_id)
+            .join(Branch, BranchInventory.branch_id == Branch.id)
+            .where(
+                Drug.organization_id == organization_id,
+                Drug.is_active       == True,
+                Drug.is_deleted      == False,
+                BranchInventory.quantity <= Drug.reorder_level,
+            )
+        )
+
+        if branch_id:
+            query = query.where(BranchInventory.branch_id == branch_id)
+
+        result = await db.execute(query)
+        rows   = result.all()
+
+        items             = []
+        out_of_stock_count = 0
+        low_stock_count    = 0
+
+        for row in rows:
+            item_status = "out_of_stock" if row.quantity == 0 else "low_stock"
+            if item_status == "out_of_stock":
+                out_of_stock_count += 1
+            else:
+                low_stock_count += 1
+
+            items.append(
+                LowStockItem(
+                    drug_id=row.drug_id,
+                    drug_name=row.drug_name,
+                    sku=row.sku,
+                    branch_id=row.branch_id,
+                    branch_name=row.branch_name,
+                    quantity=row.quantity,
+                    reorder_level=row.reorder_level,
+                    reorder_quantity=row.reorder_quantity,
+                    status=item_status,
+                    recommended_order_quantity=row.reorder_quantity,
+                )
+            )
+
+        return LowStockReport(
+            organization_id=organization_id,
+            branch_id=branch_id,
+            report_date=datetime.now(timezone.utc),
+            items=items,
+            total_items=len(items),
+            out_of_stock_count=out_of_stock_count,
+            low_stock_count=low_stock_count,
+        )
+
+    @staticmethod
+    async def get_expiring_batches_report(
+        db: AsyncSession,
+        organization_id: uuid.UUID,
+        branch_id: Optional[uuid.UUID] = None,
+        days_threshold: int = 90,
+    ) -> ExpiringBatchReport:
+        """
+        Return all non-empty batches expiring within ``days_threshold`` days.
+
+        Uses ``>= date.today()`` (inclusive) so items expiring today appear
+        in the report.  Ordered by earliest expiry first.
+        """
+        from app.models.pharmacy.pharmacy_model import Branch
+
+        threshold_date = date.today() + timedelta(days=days_threshold)
+
+        query = (
+            select(
+                DrugBatch.id.label("batch_id"),
+                DrugBatch.batch_number,
+                DrugBatch.remaining_quantity,
+                DrugBatch.expiry_date,
+                DrugBatch.cost_price,
+                DrugBatch.selling_price,
+                Drug.id.label("drug_id"),
+                Drug.name.label("drug_name"),
+                Branch.id.label("branch_id"),
+                Branch.name.label("branch_name"),
+            )
+            .join(Drug,   DrugBatch.drug_id   == Drug.id)
+            .join(Branch, DrugBatch.branch_id == Branch.id)
+            .where(
+                Drug.organization_id          == organization_id,
+                DrugBatch.remaining_quantity  > 0,
+                DrugBatch.expiry_date         >= date.today(),   # include today
+                DrugBatch.expiry_date         <= threshold_date,
+            )
+        )
+
+        if branch_id:
+            query = query.where(DrugBatch.branch_id == branch_id)
+
+        query = query.order_by(DrugBatch.expiry_date)
+
+        result = await db.execute(query)
+        rows   = result.all()
+
+        items               = []
+        total_quantity      = 0
+        total_cost_value    = Decimal("0")
+        total_selling_value = Decimal("0")
+
+        for row in rows:
+            days_until    = (row.expiry_date - date.today()).days
+            cost_value    = (Decimal(str(row.cost_price))    if row.cost_price    else Decimal("0")) * row.remaining_quantity
+            selling_value = (Decimal(str(row.selling_price)) if row.selling_price else Decimal("0")) * row.remaining_quantity
+
+            items.append(
+                ExpiringBatchItem(
+                    batch_id=row.batch_id,
+                    drug_id=row.drug_id,
+                    drug_name=row.drug_name,
+                    batch_number=row.batch_number,
+                    branch_id=row.branch_id,
+                    branch_name=row.branch_name,
+                    remaining_quantity=row.remaining_quantity,
+                    expiry_date=row.expiry_date,
+                    days_until_expiry=days_until,
+                    cost_value=cost_value,
+                    selling_value=selling_value,
+                )
+            )
+
+            total_quantity      += row.remaining_quantity
+            total_cost_value    += cost_value
+            total_selling_value += selling_value
+
+        return ExpiringBatchReport(
+            organization_id=organization_id,
+            branch_id=branch_id,
+            report_date=datetime.now(timezone.utc),
+            days_threshold=days_threshold,
+            items=items,
+            total_items=len(items),
+            total_quantity=total_quantity,
+            total_cost_value=total_cost_value,
+            total_selling_value=total_selling_value,
+        )
+
+    @staticmethod
+    async def get_inventory_valuation(
+        db: AsyncSession,
+        branch_id: uuid.UUID,
+    ) -> InventoryValuationResponse:
+        """
+        Calculate the cost and selling value of all stock at a branch.
+
+        Uses ``Drug.cost_price`` and ``Drug.unit_price`` as the per-unit
+        values for the aggregate valuation.
+
+        Raises:
+            HTTPException(404): Branch not found.
+        """
+        from app.models.pharmacy.pharmacy_model import Branch
+
+        branch_res = await db.execute(
+            select(Branch).where(Branch.id == branch_id)
+        )
+        branch = branch_res.scalar_one_or_none()
+        if not branch:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Branch not found.",
+            )
+
+        query = (
+            select(
+                Drug.id.label("drug_id"),
+                Drug.name.label("drug_name"),
+                Drug.sku,
+                Drug.cost_price,
+                Drug.unit_price,
+                BranchInventory.quantity,
+            )
+            .join(BranchInventory, Drug.id == BranchInventory.drug_id)
+            .where(
+                BranchInventory.branch_id == branch_id,
+                BranchInventory.quantity  > 0,
+            )
+        )
+
+        result = await db.execute(query)
+        rows   = result.all()
+
+        items               = []
+        total_quantity      = 0
+        total_cost_value    = Decimal("0")
+        total_selling_value = Decimal("0")
+
+        for row in rows:
+            cost_price    = Decimal(str(row.cost_price))   if row.cost_price  else Decimal("0")
+            selling_price = Decimal(str(row.unit_price))   if row.unit_price  else Decimal("0")
+            total_cost    = cost_price    * row.quantity
+            total_selling = selling_price * row.quantity
+
+            items.append(
+                InventoryValuationItem(
+                    drug_id=row.drug_id,
+                    drug_name=row.drug_name,
+                    sku=row.sku,
+                    quantity=row.quantity,
+                    cost_price=cost_price,
+                    selling_price=selling_price,
+                    total_cost_value=total_cost,
+                    total_selling_value=total_selling,
+                    potential_profit=total_selling - total_cost,
+                )
+            )
+
+            total_quantity      += row.quantity
+            total_cost_value    += total_cost
+            total_selling_value += total_selling
+
+        total_potential_profit = total_selling_value - total_cost_value
+        profit_margin = (
+            total_potential_profit / total_cost_value * 100
+            if total_cost_value > 0
+            else Decimal("0")
+        )
+
+        return InventoryValuationResponse(
+            branch_id=branch_id,
+            branch_name=branch.name,
+            valuation_date=datetime.now(timezone.utc),
+            items=items,
+            total_items=len(items),
+            total_quantity=total_quantity,
+            total_cost_value=total_cost_value,
+            total_selling_value=total_selling_value,
+            total_potential_profit=total_potential_profit,
+            profit_margin_percentage=profit_margin,
+        )
+
+    # =========================================================================
+    # PRIVATE HELPERS
+    # =========================================================================
+
+    @staticmethod
+    async def _apply_adjustment(
+        db: AsyncSession,
+        branch_id: uuid.UUID,
+        drug_id: uuid.UUID,
+        quantity_change: int,
+        adjustment_type: str,
+        reason: str,
+        adjusted_by: uuid.UUID,
+        transfer_to_branch_id: Optional[uuid.UUID] = None,
+    ) -> Tuple[StockAdjustment, BranchInventory]:
+        """
+        Internal write helper: apply a quantity delta and record the audit row.
+
+        Intentionally does NOT commit.  All callers (``adjust_inventory``,
+        ``transfer_stock``) manage their own transaction boundaries.
+
+        Acquires ``SELECT ... FOR UPDATE`` on the inventory row to prevent
+        concurrent lost-update races.  Raises ``HTTPException(404/400)`` on
+        validation failure so the caller's savepoint rolls back cleanly.
+        """
+        result = await db.execute(
+            select(BranchInventory)
+            .where(
+                BranchInventory.branch_id == branch_id,
+                BranchInventory.drug_id   == drug_id,
+            )
+            .with_for_update()
+        )
+        inventory = result.scalar_one_or_none()
+        if not inventory:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Inventory record not found for this drug at this branch.",
+            )
+
         new_quantity = inventory.quantity + quantity_change
-        
         if new_quantity < 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Adjustment would result in negative stock. "
-                       f"Current: {inventory.quantity}, Change: {quantity_change}, "
-                       f"Result: {new_quantity}"
+                detail=(
+                    f"Adjustment would result in negative stock. "
+                    f"Current: {inventory.quantity}, "
+                    f"Change: {quantity_change}, "
+                    f"Result: {new_quantity}."
+                ),
             )
-        
-        # Create adjustment record
+
         adjustment = StockAdjustment(
             id=uuid.uuid4(),
             branch_id=branch_id,
@@ -300,711 +1103,13 @@ class InventoryService:
             adjusted_by=adjusted_by,
             transfer_to_branch_id=transfer_to_branch_id,
             created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        
-        # Update inventory
-        inventory.quantity = new_quantity
-        inventory.updated_at = datetime.now(timezone.utc)
-        inventory.sync_status = 'pending'
-        inventory.sync_version += 1
-        
-        db.add(adjustment)
-        await db.commit()
-        await db.refresh(adjustment)
-        await db.refresh(inventory)
-        
-        return adjustment, inventory
-    
-    @staticmethod
-    async def transfer_stock(
-        db: AsyncSession,
-        from_branch_id: uuid.UUID,
-        to_branch_id: uuid.UUID,
-        drug_id: uuid.UUID,
-        quantity: int,
-        reason: str,
-        transferred_by: uuid.UUID
-    ) -> Tuple[StockAdjustment, StockAdjustment]:
-        """
-        Transfer stock between branches
-        
-        Args:
-            db: Database session
-            from_branch_id: Source branch ID
-            to_branch_id: Destination branch ID
-            drug_id: Drug ID
-            quantity: Quantity to transfer
-            reason: Reason for transfer
-            transferred_by: User ID making transfer
-            
-        Returns:
-            Tuple of (source_adjustment, destination_adjustment)
-            
-        Raises:
-            HTTPException: If validation fails
-        """
-        if from_branch_id == to_branch_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Source and destination branches must be different"
-            )
-        
-        if quantity <= 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Transfer quantity must be positive"
-            )
-        
-        # Validate source has enough stock
-        result = await db.execute(
-            select(BranchInventory).where(
-                BranchInventory.branch_id == from_branch_id,
-                BranchInventory.drug_id == drug_id
-            )
-        )
-        source_inventory = result.scalar_one_or_none()
-        
-        if not source_inventory:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Drug not found in source branch inventory"
-            )
-        
-        available = source_inventory.quantity - source_inventory.reserved_quantity
-        if available < quantity:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Insufficient available stock for transfer. "
-                       f"Available: {available}, Requested: {quantity}"
-            )
-        
-        # Check if destination inventory exists, create if not
-        result = await db.execute(
-            select(BranchInventory).where(
-                BranchInventory.branch_id == to_branch_id,
-                BranchInventory.drug_id == drug_id
-            )
-        )
-        dest_inventory = result.scalar_one_or_none()
-        
-        if not dest_inventory:
-            dest_inventory = BranchInventory(
-                id=uuid.uuid4(),
-                branch_id=to_branch_id,
-                drug_id=drug_id,
-                quantity=0,
-                reserved_quantity=0,
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc),
-                sync_status='pending',
-                sync_version=1
-            )
-            db.add(dest_inventory)
-        
-        # Create adjustment at source (negative)
-        source_adjustment, _ = await InventoryService.adjust_inventory(
-            db=db,
-            branch_id=from_branch_id,
-            drug_id=drug_id,
-            quantity_change=-quantity,
-            adjustment_type="transfer",
-            reason=f"Transfer to branch {to_branch_id}: {reason}",
-            adjusted_by=transferred_by,
-            transfer_to_branch_id=to_branch_id
-        )
-        
-        # Create adjustment at destination (positive)
-        dest_adjustment, _ = await InventoryService.adjust_inventory(
-            db=db,
-            branch_id=to_branch_id,
-            drug_id=drug_id,
-            quantity_change=quantity,
-            adjustment_type="transfer",
-            reason=f"Transfer from branch {from_branch_id}: {reason}",
-            adjusted_by=transferred_by
-        )
-        
-        return source_adjustment, dest_adjustment
-    
-    @staticmethod
-    async def reserve_inventory(
-        db: AsyncSession,
-        branch_id: uuid.UUID,
-        drug_id: uuid.UUID,
-        quantity: int
-    ) -> BranchInventory:
-        """
-        Reserve inventory for pending orders/prescriptions
-        
-        Args:
-            db: Database session
-            branch_id: Branch ID
-            drug_id: Drug ID
-            quantity: Quantity to reserve
-            
-        Returns:
-            Updated BranchInventory
-            
-        Raises:
-            HTTPException: If insufficient stock
-        """
-        result = await db.execute(
-            select(BranchInventory).where(
-                BranchInventory.branch_id == branch_id,
-                BranchInventory.drug_id == drug_id
-            )
-        )
-        inventory = result.scalar_one_or_none()
-        
-        if not inventory:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Inventory not found"
-            )
-        
-        available = inventory.quantity - inventory.reserved_quantity
-        if available < quantity:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Insufficient available stock. Available: {available}, Requested: {quantity}"
-            )
-        
-        inventory.reserved_quantity += quantity
-        inventory.updated_at = datetime.now(timezone.utc)
-        inventory.sync_status = 'pending'
-        inventory.sync_version += 1
-        
-        await db.commit()
-        await db.refresh(inventory)
-        
-        return inventory
-    
-    @staticmethod
-    async def release_reserved_inventory(
-        db: AsyncSession,
-        branch_id: uuid.UUID,
-        drug_id: uuid.UUID,
-        quantity: int
-    ) -> BranchInventory:
-        """Release previously reserved inventory"""
-        result = await db.execute(
-            select(BranchInventory).where(
-                BranchInventory.branch_id == branch_id,
-                BranchInventory.drug_id == drug_id
-            )
-        )
-        inventory = result.scalar_one_or_none()
-        
-        if not inventory:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Inventory not found"
-            )
-        
-        if inventory.reserved_quantity < quantity:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot release more than reserved. Reserved: {inventory.reserved_quantity}"
-            )
-        
-        inventory.reserved_quantity -= quantity
-        inventory.updated_at = datetime.now(timezone.utc)
-        inventory.sync_status = 'pending'
-        inventory.sync_version += 1
-        
-        await db.commit()
-        await db.refresh(inventory)
-        
-        return inventory
-    
-    # Drug Batch Management
-    
-    @staticmethod
-    async def create_batch(
-        db: AsyncSession,
-        batch_data: DrugBatchCreate
-    ) -> DrugBatch:
-        """
-        Create a new drug batch
-        
-        Args:
-            db: Database session
-            batch_data: Batch creation data
-            
-        Returns:
-            Created DrugBatch
-            
-        Raises:
-            HTTPException: If validation fails
-        """
-        # Check if batch already exists
-        result = await db.execute(
-            select(DrugBatch).where(
-                DrugBatch.branch_id == batch_data.branch_id,
-                DrugBatch.drug_id == batch_data.drug_id,
-                DrugBatch.batch_number == batch_data.batch_number
-            )
-        )
-        existing_batch = result.scalar_one_or_none()
-        
-        if existing_batch:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Batch '{batch_data.batch_number}' already exists for this drug at this branch"
-            )
-        
-        # Create batch
-        batch = DrugBatch(
-            id=uuid.uuid4(),
-            **batch_data.model_dump(),
-            created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
-            sync_status='pending',
-            sync_version=1
         )
-        
-        db.add(batch)
-        
-        # Update branch inventory
-        await InventoryService.create_or_update_inventory(
-            db=db,
-            branch_id=batch_data.branch_id,
-            drug_id=batch_data.drug_id,
-            quantity=batch_data.quantity
-        )
-        
-        await db.commit()
-        await db.refresh(batch)
-        
-        return batch
-    
-    @staticmethod
-    async def get_batches_for_drug(
-        db: AsyncSession,
-        drug_id: uuid.UUID,
-        branch_id: Optional[uuid.UUID] = None,
-        include_expired: bool = False,
-        include_empty: bool = False
-    ) -> List[DrugBatch]:
-        """
-        Get batches for a drug (non-paginated - for internal use)
-        
-        Args:
-            db: Database session
-            drug_id: Drug ID
-            branch_id: Optional branch ID filter
-            include_expired: Include expired batches
-            include_empty: Include batches with zero quantity
-            
-        Returns:
-            List of DrugBatch objects
-        """
-        query = select(DrugBatch).where(DrugBatch.drug_id == drug_id)
-        
-        if branch_id:
-            query = query.where(DrugBatch.branch_id == branch_id)
-        
-        if not include_expired:
-            query = query.where(DrugBatch.expiry_date >= date.today())
-        
-        if not include_empty:
-            query = query.where(DrugBatch.remaining_quantity > 0)
-        
-        # Order by expiry date (FEFO - First Expired First Out)
-        query = query.order_by(DrugBatch.expiry_date, DrugBatch.created_at)
-        
-        result = await db.execute(query)
-        return list(result.scalars().all())
-    
-    @staticmethod
-    async def get_batches_paginated(
-        db: AsyncSession,
-        drug_id: uuid.UUID,
-        pagination: 'PaginationParams',
-        branch_id: Optional[uuid.UUID] = None,
-        include_expired: bool = False,
-        include_empty: bool = False,
-        expiring_within_days: Optional[int] = None
-    ) -> 'PaginatedResponse[DrugBatch]':
-        """
-        Get paginated batches for a drug
-        
-        Args:
-            db: Database session
-            drug_id: Drug ID
-            pagination: Pagination parameters
-            branch_id: Optional branch ID filter
-            include_expired: Include expired batches
-            include_empty: Include batches with zero quantity
-            expiring_within_days: Show only batches expiring within N days
-            
-        Returns:
-            PaginatedResponse with DrugBatch objects
-        """
-        from app.utils.pagination import Paginator
-        
-        query = select(DrugBatch).where(DrugBatch.drug_id == drug_id)
-        count_query = select(func.count()).select_from(DrugBatch).where(DrugBatch.drug_id == drug_id)
-        
-        if branch_id:
-            query = query.where(DrugBatch.branch_id == branch_id)
-            count_query = count_query.where(DrugBatch.branch_id == branch_id)
-        
-        if not include_expired:
-            query = query.where(DrugBatch.expiry_date >= date.today())
-            count_query = count_query.where(DrugBatch.expiry_date >= date.today())
-        
-        if not include_empty:
-            query = query.where(DrugBatch.remaining_quantity > 0)
-            count_query = count_query.where(DrugBatch.remaining_quantity > 0)
-        
-        if expiring_within_days:
-            expiry_threshold = date.today() + timedelta(days=expiring_within_days)
-            query = query.where(
-                and_(
-                    DrugBatch.expiry_date >= date.today(),
-                    DrugBatch.expiry_date <= expiry_threshold
-                )
-            )
-            count_query = count_query.where(
-                and_(
-                    DrugBatch.expiry_date >= date.today(),
-                    DrugBatch.expiry_date <= expiry_threshold
-                )
-            )
-        
-        # Order by expiry date (FEFO - First Expired First Out)
-        query = query.order_by(DrugBatch.expiry_date, DrugBatch.created_at)
-        
-        paginator = Paginator(db)
-        result = await paginator.paginate_raw_query(
-            query=query,
-            count_query=count_query,
-            params=pagination,
-            schema=DrugBatchResponse
-        )
-        
-        return result
-    
-    @staticmethod
-    async def consume_from_batch(
-        db: AsyncSession,
-        batch_id: uuid.UUID,
-        quantity: int
-    ) -> DrugBatch:
-        """
-        Consume quantity from a batch (for sales)
-        
-        Args:
-            db: Database session
-            batch_id: Batch ID
-            quantity: Quantity to consume
-            
-        Returns:
-            Updated DrugBatch
-            
-        Raises:
-            HTTPException: If insufficient quantity
-        """
-        result = await db.execute(
-            select(DrugBatch).where(DrugBatch.id == batch_id)
-        )
-        batch = result.scalar_one_or_none()
-        
-        if not batch:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Batch not found"
-            )
-        
-        if batch.remaining_quantity < quantity:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Insufficient quantity in batch. "
-                       f"Available: {batch.remaining_quantity}, Requested: {quantity}"
-            )
-        
-        batch.remaining_quantity -= quantity
-        batch.updated_at = datetime.now(timezone.utc)
-        batch.sync_status = 'pending'
-        batch.sync_version += 1
-        
-        await db.commit()
-        await db.refresh(batch)
-        
-        return batch
-    
-    # Reports and Analytics
-    
-    @staticmethod
-    async def get_low_stock_report(
-        db: AsyncSession,
-        organization_id: uuid.UUID,
-        branch_id: Optional[uuid.UUID] = None
-    ) -> LowStockReport:
-        """
-        Generate low stock report
-        
-        Args:
-            db: Database session
-            organization_id: Organization ID
-            branch_id: Optional branch ID filter
-            
-        Returns:
-            LowStockReport
-        """
-        from app.models.pharmacy.pharmacy_model import Organization, Branch
-        
-        # Query for low stock items
-        query = (
-            select(
-                Drug.id.label('drug_id'),
-                Drug.name.label('drug_name'),
-                Drug.sku,
-                Drug.reorder_level,
-                Drug.reorder_quantity,
-                BranchInventory.branch_id,
-                Branch.name.label('branch_name'),
-                BranchInventory.quantity
-            )
-            .join(BranchInventory, Drug.id == BranchInventory.drug_id)
-            .join(Branch, BranchInventory.branch_id == Branch.id)
-            .where(
-                Drug.organization_id == organization_id,
-                Drug.is_active == True,
-                Drug.is_deleted == False,
-                BranchInventory.quantity <= Drug.reorder_level
-            )
-        )
-        
-        if branch_id:
-            query = query.where(BranchInventory.branch_id == branch_id)
-        
-        result = await db.execute(query)
-        rows = result.all()
-        
-        items = []
-        out_of_stock_count = 0
-        low_stock_count = 0
-        
-        for row in rows:
-            status = "out_of_stock" if row.quantity == 0 else "low_stock"
-            if status == "out_of_stock":
-                out_of_stock_count += 1
-            else:
-                low_stock_count += 1
-            
-            items.append(LowStockItem(
-                drug_id=row.drug_id,
-                drug_name=row.drug_name,
-                sku=row.sku,
-                branch_id=row.branch_id,
-                branch_name=row.branch_name,
-                quantity=row.quantity,
-                reorder_level=row.reorder_level,
-                reorder_quantity=row.reorder_quantity,
-                status=status,
-                recommended_order_quantity=row.reorder_quantity
-            ))
-        
-        return LowStockReport(
-            organization_id=organization_id,
-            branch_id=branch_id,
-            report_date=datetime.now(timezone.utc),
-            items=items,
-            total_items=len(items),
-            out_of_stock_count=out_of_stock_count,
-            low_stock_count=low_stock_count
-        )
-    
-    @staticmethod
-    async def get_expiring_batches_report(
-        db: AsyncSession,
-        organization_id: uuid.UUID,
-        branch_id: Optional[uuid.UUID] = None,
-        days_threshold: int = 90
-    ) -> ExpiringBatchReport:
-        """
-        Generate expiring batches report
-        
-        Args:
-            db: Database session
-            organization_id: Organization ID
-            branch_id: Optional branch ID filter
-            days_threshold: Days until expiry threshold
-            
-        Returns:
-            ExpiringBatchReport
-        """
-        from app.models.pharmacy.pharmacy_model import Branch
-        
-        threshold_date = date.today() + timedelta(days=days_threshold)
-        
-        query = (
-            select(
-                DrugBatch.id.label('batch_id'),
-                DrugBatch.batch_number,
-                DrugBatch.remaining_quantity,
-                DrugBatch.expiry_date,
-                DrugBatch.cost_price,
-                DrugBatch.selling_price,
-                Drug.id.label('drug_id'),
-                Drug.name.label('drug_name'),
-                Branch.id.label('branch_id'),
-                Branch.name.label('branch_name')
-            )
-            .join(Drug, DrugBatch.drug_id == Drug.id)
-            .join(Branch, DrugBatch.branch_id == Branch.id)
-            .where(
-                Drug.organization_id == organization_id,
-                DrugBatch.remaining_quantity > 0,
-                DrugBatch.expiry_date <= threshold_date,
-                DrugBatch.expiry_date >= date.today()
-            )
-        )
-        
-        if branch_id:
-            query = query.where(DrugBatch.branch_id == branch_id)
-        
-        query = query.order_by(DrugBatch.expiry_date)
-        
-        result = await db.execute(query)
-        rows = result.all()
-        
-        items = []
-        total_quantity = 0
-        total_cost_value = Decimal('0')
-        total_selling_value = Decimal('0')
-        
-        for row in rows:
-            days_until = (row.expiry_date - date.today()).days
-            cost_value = (row.cost_price or Decimal('0')) * row.remaining_quantity
-            selling_value = (row.selling_price or Decimal('0')) * row.remaining_quantity
-            
-            items.append(ExpiringBatchItem(
-                batch_id=row.batch_id,
-                drug_id=row.drug_id,
-                drug_name=row.drug_name,
-                batch_number=row.batch_number,
-                branch_id=row.branch_id,
-                branch_name=row.branch_name,
-                remaining_quantity=row.remaining_quantity,
-                expiry_date=row.expiry_date,
-                days_until_expiry=days_until,
-                cost_value=cost_value,
-                selling_value=selling_value
-            ))
-            
-            total_quantity += row.remaining_quantity
-            total_cost_value += cost_value
-            total_selling_value += selling_value
-        
-        return ExpiringBatchReport(
-            organization_id=organization_id,
-            branch_id=branch_id,
-            report_date=datetime.now(timezone.utc),
-            days_threshold=days_threshold,
-            items=items,
-            total_items=len(items),
-            total_quantity=total_quantity,
-            total_cost_value=total_cost_value,
-            total_selling_value=total_selling_value
-        )
-    
-    @staticmethod
-    async def get_inventory_valuation(
-        db: AsyncSession,
-        branch_id: uuid.UUID
-    ) -> InventoryValuationResponse:
-        """
-        Calculate inventory valuation for a branch
-        
-        Args:
-            db: Database session
-            branch_id: Branch ID
-            
-        Returns:
-            InventoryValuationResponse
-        """
-        from app.models.pharmacy.pharmacy_model import Branch
-        
-        # Get branch name
-        result = await db.execute(
-            select(Branch).where(Branch.id == branch_id)
-        )
-        branch = result.scalar_one_or_none()
-        
-        if not branch:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Branch not found"
-            )
-        
-        # Get inventory with drug details
-        query = (
-            select(
-                Drug.id.label('drug_id'),
-                Drug.name.label('drug_name'),
-                Drug.sku,
-                Drug.cost_price,
-                Drug.unit_price,
-                BranchInventory.quantity
-            )
-            .join(BranchInventory, Drug.id == BranchInventory.drug_id)
-            .where(
-                BranchInventory.branch_id == branch_id,
-                BranchInventory.quantity > 0
-            )
-        )
-        
-        result = await db.execute(query)
-        rows = result.all()
-        
-        items = []
-        total_quantity = 0
-        total_cost_value = Decimal('0')
-        total_selling_value = Decimal('0')
-        
-        for row in rows:
-            cost_price = row.cost_price or Decimal('0')
-            selling_price = row.unit_price or Decimal('0')
-            
-            total_cost = cost_price * row.quantity
-            total_selling = selling_price * row.quantity
-            potential_profit = total_selling - total_cost
-            
-            items.append(InventoryValuationItem(
-                drug_id=row.drug_id,
-                drug_name=row.drug_name,
-                sku=row.sku,
-                quantity=row.quantity,
-                cost_price=cost_price,
-                selling_price=selling_price,
-                total_cost_value=total_cost,
-                total_selling_value=total_selling,
-                potential_profit=potential_profit
-            ))
-            
-            total_quantity += row.quantity
-            total_cost_value += total_cost
-            total_selling_value += total_selling
-        
-        total_potential_profit = total_selling_value - total_cost_value
-        profit_margin = (
-            (total_potential_profit / total_cost_value * 100)
-            if total_cost_value > 0 else Decimal('0')
-        )
-        
-        return InventoryValuationResponse(
-            branch_id=branch_id,
-            branch_name=branch.name,
-            valuation_date=datetime.now(timezone.utc),
-            items=items,
-            total_items=len(items),
-            total_quantity=total_quantity,
-            total_cost_value=total_cost_value,
-            total_selling_value=total_selling_value,
-            total_potential_profit=total_potential_profit,
-            profit_margin_percentage=profit_margin
-        )
+        db.add(adjustment)
+
+        inventory.quantity   = new_quantity
+        inventory.updated_at = datetime.now(timezone.utc)
+        inventory.mark_as_pending_sync()
+
+        await db.flush()
+        return adjustment, inventory
