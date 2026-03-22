@@ -2,7 +2,7 @@
 Inventory Schemas
 Schemas for branch inventory and stock management
 """
-from pydantic import Field, field_validator, ConfigDict
+from pydantic import Field, field_validator, model_validator, computed_field, ConfigDict
 from typing import Optional, List
 from datetime import datetime, date
 from decimal import Decimal
@@ -45,9 +45,10 @@ class BranchInventoryResponse(BranchInventoryBase, TimestampSchema, SyncSchema):
     branch_id: uuid.UUID
     drug_id: uuid.UUID
     
+    @computed_field
     @property
     def available_quantity(self) -> int:
-        """Calculate available quantity"""
+        """Calculate available quantity (serialised in API responses)."""
         return max(0, self.quantity - self.reserved_quantity)
     
     model_config = ConfigDict(from_attributes=True)
@@ -66,7 +67,7 @@ class DrugBatchBase(BaseSchema):
     """Base drug batch fields"""
     batch_number: str = Field(..., min_length=1, max_length=100, description="Manufacturer's batch/lot number")
     quantity: int = Field(..., gt=0, description="Initial quantity received")
-    remaining_quantity: int = Field(..., ge=0, description="Current remaining quantity")
+    remaining_quantity: Optional[int] = Field(None, ge=0, description="Current remaining quantity; defaults to quantity when not supplied")
     manufacturing_date: Optional[date] = None
     expiry_date: date = Field(..., description="Expiration date")
     cost_price: Optional[Money] = Field(
@@ -94,6 +95,13 @@ class DrugBatchBase(BaseSchema):
         if v < date.today():
             raise ValueError('Expiry date must be in the future')
         return v
+
+    @model_validator(mode='after')
+    def default_remaining_quantity(self) -> 'DrugBatchBase':
+        """Default remaining_quantity to quantity when not supplied by the client."""
+        if self.remaining_quantity is None:
+            self.remaining_quantity = self.quantity
+        return self
 
 
 class DrugBatchCreate(DrugBatchBase):
@@ -124,19 +132,22 @@ class DrugBatchResponse(DrugBatchBase, TimestampSchema, SyncSchema):
     drug_id: uuid.UUID
     purchase_order_id: Optional[uuid.UUID] = None
     
+    @computed_field
     @property
     def days_until_expiry(self) -> int:
-        """Calculate days until expiry"""
+        """Days remaining until batch expiry (serialised in API responses)."""
         return (self.expiry_date - date.today()).days
     
+    @computed_field
     @property
     def is_expired(self) -> bool:
-        """Check if batch is expired"""
+        """Whether the batch expiry date has passed (serialised in API responses)."""
         return self.expiry_date < date.today()
     
+    @computed_field
     @property
     def is_expiring_soon(self) -> bool:
-        """Check if batch expires within 90 days"""
+        """Whether the batch expires within 90 days (serialised in API responses)."""
         return 0 <= self.days_until_expiry <= 90
     
     model_config = ConfigDict(from_attributes=True)
@@ -154,7 +165,7 @@ class StockAdjustmentBase(BaseSchema):
     """Base stock adjustment fields"""
     adjustment_type: str = Field(
         ...,
-        pattern="^(damage|expired|theft|return|correction|transfer|sale)$",
+        pattern="^(damage|expired|theft|return|correction|transfer)$",
         description="Type of adjustment"
     )
     quantity_change: int = Field(..., description="Positive for additions, negative for reductions")

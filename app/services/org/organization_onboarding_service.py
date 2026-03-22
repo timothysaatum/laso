@@ -48,7 +48,7 @@ class OrganizationOnboardingService:
         self,
         org_data: Dict[str, Any],
         admin_data: Dict[str, Any],
-        branches_data: Optional[List[Dict[str, Any]]] = None,  # Changed to Dict for flexibility
+        branches_data: Optional[List[Dict[str, Any]]] = None,
         created_by: Optional[uuid.UUID] = None
     ) -> Dict[str, Any]:
         """
@@ -119,7 +119,6 @@ class OrganizationOnboardingService:
                 created_branches = [default_branch]
             
             # Update admin's assigned branches (assign to all created branches)
-            admin_user.assigned_branches = [branch.id for branch in created_branches]
             
             # Initialize organization settings
             await self._initialize_organization_settings(organization)

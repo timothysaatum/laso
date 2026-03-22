@@ -200,8 +200,17 @@ class SyncService:
         now  = datetime.now(timezone.utc)
         since = request.last_sync_at
 
-        # Open a REPEATABLE READ transaction for consistent multi-table read
-        await db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+        # Request a consistent snapshot so all table queries see the same DB state.
+        # PostgreSQL: SET TRANSACTION ISOLATION LEVEL REPEATABLE READ
+        # SQLite:     default isolation is already SERIALIZABLE (stronger than
+        #             REPEATABLE READ) — the SET syntax does not exist and is not
+        #             needed.  We catch OperationalError so the same code works in
+        #             both development (SQLite/aiosqlite) and production (PostgreSQL).
+        from sqlalchemy.exc import OperationalError as SA_OperationalError
+        try:
+            await db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+        except SA_OperationalError:
+            pass  # SQLite — default isolation is already sufficient
 
         result = PullResponse(sync_timestamp=now)
         total  = 0
