@@ -62,7 +62,9 @@ async def create_initial_admin():
                 full_name="System Administrator",
                 role="super_admin",
                 organization_id=org.id,
-                assigned_branches=[]
+                assigned_branches=[],
+                employee_id=None,
+                phone=None
             )
             
             user = await AuthService.create_user(db, admin_data)

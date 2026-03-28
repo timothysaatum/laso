@@ -126,7 +126,7 @@ class OrganizationOnboardingService:
             # Create audit log
             await self._create_audit_log(
                 organization_id=organization.id,
-                user_id=created_by,
+                user_id=created_by if created_by is not None else None,
                 action="organization_created",
                 entity_type="organization",
                 entity_id=organization.id,

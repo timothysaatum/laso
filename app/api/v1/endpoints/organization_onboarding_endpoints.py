@@ -356,6 +356,54 @@ async def update_subscription(
     description="Update organization-specific settings. **Requires admin or super_admin role**",
     dependencies=[Depends(require_role("admin", "super_admin"))]
 )
+async def update_organization_settings(
+    organization_id: uuid.UUID,
+    settings_data: OrganizationSettingsUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Update organization settings
+
+    - **currency**: Currency code
+    - **timezone**: Timezone
+    - **low_stock_threshold**: Low stock alert threshold
+    - **enable_loyalty_program**: Enable/disable loyalty program
+    - And more...
+    """
+    # Check authorization
+    if current_user.role != "super_admin":
+        if current_user.organization_id != organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this organization"
+            )
+
+    # Get organization
+    result = await db.execute(
+        select(Organization).where(Organization.id == organization_id)
+    )
+    organization = result.scalar_one_or_none()
+
+    if not organization:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organization not found"
+        )
+
+    # Update settings
+    current_settings = organization.settings or {}
+    update_dict = settings_data.model_dump(exclude_unset=True)
+
+    # Merge new settings with existing
+    current_settings.update(update_dict)
+    organization.settings = current_settings
+
+    await db.commit()
+    await db.refresh(organization)
+
+    return organization
+
 
 @router.get(
     "/{organization_id}/stats",
@@ -496,52 +544,3 @@ async def get_organization_stats(
         days_until_expiry=days_until_expiry,
         is_active=organization.is_active
     )
-
-
-async def update_organization_settings(
-    organization_id: uuid.UUID,
-    settings_data: OrganizationSettingsUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Update organization settings
-    
-    - **currency**: Currency code
-    - **timezone**: Timezone
-    - **low_stock_threshold**: Low stock alert threshold
-    - **enable_loyalty_program**: Enable/disable loyalty program
-    - And more...
-    """
-    # Check authorization
-    if current_user.role != "super_admin":
-        if current_user.organization_id != organization_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied to this organization"
-            )
-    
-    # Get organization
-    result = await db.execute(
-        select(Organization).where(Organization.id == organization_id)
-    )
-    organization = result.scalar_one_or_none()
-    
-    if not organization:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Organization not found"
-        )
-    
-    # Update settings
-    current_settings = organization.settings or {}
-    update_dict = settings_data.model_dump(exclude_unset=True)
-    
-    # Merge new settings with existing
-    current_settings.update(update_dict)
-    organization.settings = current_settings
-    
-    await db.commit()
-    await db.refresh(organization)
-    
-    return organization
