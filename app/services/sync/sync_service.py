@@ -12,6 +12,14 @@ bug where a record committed between two sequential table queries has
 pull and every future pull.  The ``sync_timestamp`` returned to the client is
 the server-side ``now`` captured at transaction open — not after queries.
 
+Pull filtering
+--------------
+Sales (and other branch-owned records) are only pulled when their
+``sync_status`` is ``'synced'``.  Records still marked ``'pending'`` on the
+server were created via the POS endpoint but not yet flushed to synced state;
+pulling them would cause the client to immediately try to push them back,
+creating an infinite sync loop.
+
 Push strategy
 -------------
 Each record is processed inside its own ``begin_nested()`` savepoint so a
@@ -98,6 +106,10 @@ _SYNC_META_KEYS: frozenset[str] = frozenset(
 _SALE_WRITABLE: frozenset[str] = frozenset({
     "id", "sale_number", "customer_id", "customer_name",
     "subtotal", "discount_amount", "tax_amount", "total_amount",
+    # Schema aliases — client sends these; remapped to discount_amount before insert
+    "total_discount_amount",
+    "contract_discount_amount",
+    "additional_discount_amount",
     "price_contract_id", "contract_name", "contract_discount_percentage",
     "payment_method", "payment_status", "amount_paid", "change_amount",
     "payment_reference",
@@ -190,6 +202,11 @@ class SyncService:
         so every query sees the same consistent DB snapshot.  This prevents
         a record committed between two sequential table queries from being
         silently skipped in both the current pull and all future pulls.
+
+        Branch-owned records (sales, inventory, batches) are filtered to
+        ``sync_status = 'synced'`` so that server-created records that are
+        still pending don't get pulled to the client and pushed right back,
+        which would create an infinite sync loop.
         """
         branch_id = request.branch_id
         tables    = set(request.tables)
@@ -197,7 +214,7 @@ class SyncService:
         # Capture now BEFORE opening the transaction so the client's next
         # last_sync_at is slightly behind the snapshot point, guaranteeing
         # no records fall in the gap.
-        now  = datetime.now(timezone.utc)
+        now   = datetime.now(timezone.utc)
         since = request.last_sync_at
 
         # Request a consistent snapshot so all table queries see the same DB state.
@@ -250,6 +267,10 @@ class SyncService:
             rows = await SyncService._pull_table(
                 db, BranchInventory, since,
                 BranchInventory.branch_id == branch_id,
+                # Only pull synced records — pending means the server hasn't
+                # finished processing them; pulling them would cause the client
+                # to push them straight back in a loop.
+                BranchInventory.sync_status == "synced",
             )
             result.branch_inventory = [BranchInventoryResponse.model_validate(r) for r in rows]
             total += len(rows)
@@ -258,6 +279,7 @@ class SyncService:
             rows = await SyncService._pull_table(
                 db, DrugBatch, since,
                 DrugBatch.branch_id == branch_id,
+                DrugBatch.sync_status == "synced",
             )
             result.drug_batches = [DrugBatchResponse.model_validate(r) for r in rows]
             total += len(rows)
@@ -266,6 +288,13 @@ class SyncService:
             rows = await SyncService._pull_table(
                 db, Sale, since,
                 Sale.branch_id == branch_id,
+                # IMPORTANT: only pull synced sales.  Sales created via the
+                # POS endpoint are initially marked 'pending' by mark_as_pending_sync()
+                # before the sales_service commit.  If we pull them while still
+                # pending the client stores them as pending and immediately tries
+                # to push them back, causing a NOT NULL constraint on discount_amount
+                # and an infinite sync-error loop.
+                Sale.sync_status == "synced",
             )
             result.sales = [SaleResponse.model_validate(r) for r in rows]
             total += len(rows)
@@ -274,6 +303,7 @@ class SyncService:
             rows = await SyncService._pull_table(
                 db, PurchaseOrder, since,
                 PurchaseOrder.branch_id == branch_id,
+                PurchaseOrder.sync_status == "synced",
             )
             result.purchase_orders = [PurchaseOrderResponse.model_validate(r) for r in rows]
             total += len(rows)
@@ -327,9 +357,9 @@ class SyncService:
         issued after the entire batch completes.
         """
         now       = datetime.now(timezone.utc)
-        accepted: List[PushResult]  = []
+        accepted: List[PushResult]   = []
         conflicts: List[PushConflict] = []
-        failed: List[PushResult]    = []
+        failed: List[PushResult]     = []
 
         for record in request.records:
             try:
@@ -430,6 +460,11 @@ class SyncService:
         success without re-inserting.  The org scope is included in both the
         id and sale_number checks so a sale-number collision from a different
         org is not mistaken for an idempotent re-push.
+
+        Discount mapping: the schema serialises the DB column ``discount_amount``
+        as ``total_discount_amount`` (via validation_alias).  The client
+        therefore pushes ``total_discount_amount``; we remap it back to the DB
+        column name before constructing the Sale model.
         """
         existing = (await db.execute(
             select(Sale).where(
@@ -452,6 +487,23 @@ class SyncService:
         safe_data = _whitelist(record.data, _SALE_WRITABLE)
         safe_data["organization_id"] = str(organization_id)
         safe_data["branch_id"]       = str(branch_id)
+
+        # Remap schema alias → DB column.
+        # The client sends total_discount_amount (the serialised alias of the
+        # DB column discount_amount).  Use explicit None checks so that a
+        # legitimate zero discount (0 / Decimal("0")) is never skipped.
+        if safe_data.get("discount_amount") is None:
+            discount = safe_data.get("total_discount_amount")
+            if discount is None:
+                discount = safe_data.get("contract_discount_amount")
+            # Assign outside both inner checks so non-None total_discount_amount
+            # is correctly used even when contract_discount_amount is also present.
+            safe_data["discount_amount"] = discount if discount is not None else 0
+
+        # Drop schema-only fields — not DB columns; Sale(**safe_data) will reject them.
+        safe_data.pop("total_discount_amount", None)
+        safe_data.pop("contract_discount_amount", None)
+        safe_data.pop("additional_discount_amount", None)
 
         sale = Sale(**safe_data)
         sale.sync_status = "synced"

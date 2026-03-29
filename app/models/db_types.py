@@ -6,20 +6,24 @@ from sqlalchemy import TypeDecorator, String, Text
 import uuid
 import json
 
-    
+
+class _UUIDEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, uuid.UUID):
+            return str(o)
+        return super().default(o)
+
+def _dumps(value: object) -> str:
+    return json.dumps(value, cls=_UUIDEncoder)
+
+
 class UUID(TypeDecorator):
-    """Platform-independent UUID type.
-    
-    Uses BINARY(16) for SQLite and UUID for PostgreSQL.
-    """
     impl = String(36)
     cache_ok = True
 
     def process_bind_param(self, value, dialect):
         if value is None:
             return value
-        if dialect.name == 'postgresql':
-            return str(value)
         if isinstance(value, uuid.UUID):
             return str(value)
         return value
@@ -33,10 +37,6 @@ class UUID(TypeDecorator):
 
 
 class JSONB(TypeDecorator):
-    """Platform-independent JSONB type.
-    
-    Uses JSON for SQLite and JSONB for PostgreSQL.
-    """
     impl = Text
     cache_ok = True
 
@@ -45,7 +45,7 @@ class JSONB(TypeDecorator):
             return value
         if isinstance(value, str):
             return value
-        return json.dumps(value)
+        return _dumps(value)          # ← was json.dumps(value)
 
     def process_result_value(self, value, dialect):
         if value is None:
@@ -58,10 +58,6 @@ class JSONB(TypeDecorator):
 
 
 class ARRAY(TypeDecorator):
-    """Platform-independent ARRAY type.
-    
-    Uses JSON string representation for SQLite and ARRAY for PostgreSQL.
-    """
     impl = Text
     cache_ok = True
 
@@ -74,7 +70,7 @@ class ARRAY(TypeDecorator):
             return value
         if isinstance(value, str):
             return value
-        return json.dumps(value)
+        return _dumps(value)          # ← was json.dumps(value)
 
     def process_result_value(self, value, dialect):
         if value is None:
@@ -87,9 +83,5 @@ class ARRAY(TypeDecorator):
 
 
 class INET(TypeDecorator):
-    """Platform-independent INET type for IP addresses.
-    
-    Uses VARCHAR for both SQLite and PostgreSQL.
-    """
     impl = String(45)
     cache_ok = True

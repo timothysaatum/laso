@@ -81,7 +81,7 @@ class SaleItemResponse(TimestampSchema):
     
     # Quantity and batch tracking
     quantity: int
-    batch_id: Optional[uuid.UUID]
+    batch_id: Optional[uuid.UUID] = None
     batch_number: Optional[str] = Field(None, description="Batch number for traceability")
     batch_expiry_date: Optional[date] = Field(None, description="Batch expiry date")
     
@@ -118,7 +118,8 @@ class SaleItemResponse(TimestampSchema):
     
     # Total discount
     total_discount_amount: Decimal = Field(
-        ...,
+        default=Decimal('0.00'),
+        validation_alias='discount_amount',
         description="contract_discount_amount + additional_discount_amount"
     )
     
@@ -170,13 +171,12 @@ class SaleItemResponse(TimestampSchema):
         description="Whether customer allergy check was performed"
     )
     
-    model_config = ConfigDict(from_attributes=True)
-
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 class SaleItemWithDetails(SaleItemResponse):
     """Sale item with additional details"""
-    drug_manufacturer: Optional[str]
-    drug_category: Optional[str]
+    drug_manufacturer: Optional[str] = None
+    drug_category: Optional[str] = None
     pharmacist_notes: Optional[str] = Field(
         None,
         description="Pharmacist notes about this item"
@@ -428,7 +428,8 @@ class SaleResponse(SaleBase, TimestampSchema, SyncSchema):
     )
     
     total_discount_amount: Decimal = Field(
-        ...,
+        default=Decimal('0.00'),
+        validation_alias='discount_amount',
         description="contract_discount_amount + additional_discount_amount"
     )
     
@@ -547,7 +548,7 @@ class SaleResponse(SaleBase, TimestampSchema, SyncSchema):
         """Amount after all deductions"""
         return self.total_amount - (self.insurance_covered_amount or Decimal('0.00'))
     
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class SaleWithDetails(SaleResponse):

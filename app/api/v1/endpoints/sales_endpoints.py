@@ -19,6 +19,7 @@ from app.schemas.sales_schemas import (
     SaleFilters
 )
 from app.services.sales.sales_service import SalesService
+from app.services.sales.utils.sale_helpers import build_sale_with_details
 from app.utils.pagination import PaginatedResponse, Paginator, PaginationParams
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
@@ -132,7 +133,7 @@ async def get_sale(
             detail="Access denied"
         )
     
-    return await SalesService._build_sale_with_details(db, sale)
+    return await build_sale_with_details(db, sale)
 
 
 @router.get(
