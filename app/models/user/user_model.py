@@ -172,12 +172,12 @@ class User(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         role_permissions = {
             'super_admin': ['*'],
             'admin': ['manage_users', 'manage_branches', 'manage_drugs', 'manage_suppliers', 'approve_purchase_orders',
-                     'manage_inventory', 'process_sales', 'view_reports', 'export_data'],
+                     'manage_inventory', 'process_sales', 'view_reports', 'export_data', 'manage_customers'],
             'manager': ['manage_drugs', 'manage_inventory', 'process_sales', 'approve_purchase_orders',
-                       'view_reports', 'export_data', 'manage_suppliers'],
+                       'view_reports', 'export_data', 'manage_suppliers', 'manage_customers'],
             'pharmacist': ['view_drugs', 'process_sales', 'view_inventory', 'approve_purchase_orders',
-                          'manage_prescriptions', 'manage_suppliers'],
-            'cashier': ['view_drugs', 'process_sales', 'view_inventory'],
+                          'manage_prescriptions', 'manage_suppliers', 'manage_customers'],
+            'cashier': ['view_drugs', 'process_sales', 'view_inventory', 'manage_customers'],
             'viewer': ['view_drugs', 'view_inventory', 'view_reports']
         }
         
