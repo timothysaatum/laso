@@ -78,7 +78,6 @@ class Sale(Base, TimestampMixin, SyncTrackingMixin):
         comment="Sum of all items at base prices (before contract discount and tax)"
     )
     
-    # SIMPLIFIED: Only contract-based discount, no additional manual discounts
     discount_amount: Mapped[float] = mapped_column(
         Numeric(10, 2),
         default=0,
@@ -509,7 +508,6 @@ class SaleItem(Base, TimestampMixin):
 
 
 # ==================== SUPPLIER AND PURCHASE ORDER MODELS ====================
-# (Keeping these unchanged from your original file)
 
 class Supplier(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
     """Supplier/vendor management"""

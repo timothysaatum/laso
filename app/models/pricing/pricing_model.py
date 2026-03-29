@@ -193,9 +193,7 @@ class PriceContract(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         nullable=False,
         comment="Require verification (e.g., insurance card scan) before applying"
     )
-    
-    # REMOVED: requires_approval field - no manager approval needed anymore
-    
+        
     allowed_user_roles: Mapped[List[str]] = mapped_column(
         ARRAY(String),
         default=list,

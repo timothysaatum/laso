@@ -34,7 +34,6 @@ class OrganizationBase(BaseSchema):
     def validate_phone(cls, v: Optional[str]) -> Optional[str]:
         """Validate and normalize phone number"""
         if v:
-            # Remove all non-digit characters except +
             cleaned = re.sub(r'[^\d+]', '', v)
             if len(cleaned) < 10:
                 raise ValueError("Phone number must have at least 10 digits")
@@ -86,7 +85,6 @@ class OrganizationResponse(OrganizationBase, TimestampSchema, SyncSchema):
     subscription_tier: str
     subscription_expires_at: Optional[datetime] = None
 
-    # Security: Don't expose sensitive settings in API responses
     @field_validator('settings')
     @classmethod
     def sanitize_settings(cls, v: Dict[str, Any]) -> Dict[str, Any]:
