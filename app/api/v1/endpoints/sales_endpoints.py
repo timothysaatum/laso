@@ -209,14 +209,22 @@ async def list_sales(
     if price_contract_id:
         filters.append(Sale.price_contract_id == price_contract_id)
     
-    if contract_type:
-        filters.append(Sale.price_contract.contract_type == contract_type)
-    
+    from app.models.pricing.pricing_model import PriceContract
+
     query = (
         select(Sale)
         .where(and_(*filters))
         .order_by(Sale.created_at.desc())
     )
+
+    if contract_type:
+        # Join PriceContract to filter by contract_type column (ORM relationship
+        # attributes cannot be used as SQL expressions directly).
+        query = (
+            query
+            .join(PriceContract, Sale.price_contract_id == PriceContract.id)
+            .where(PriceContract.contract_type == contract_type)
+        )
     
     paginator = Paginator(db)
     return await paginator.paginate(query, pagination, SaleResponse)

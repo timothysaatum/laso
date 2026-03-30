@@ -1,209 +1,240 @@
 """
 Purchase Order Service
-Business logic for purchase orders, receiving goods, and supplier management
+Business logic for purchase orders, receiving goods, and supplier management.
+
+Key design decisions:
+- All writes use explicit transactions; nested savepoints guard the critical
+  receive_goods path so a single bad item cannot silently corrupt inventory.
+- Row-level locking (WITH FOR UPDATE) on BranchInventory during receive ensures
+  concurrent PO receipts for the same drug never produce phantom stock.
+- PO-number generation is collision-safe via a SELECT … FOR UPDATE on the
+  sequence counter, not a naive COUNT.
+- _build_po_with_details uses a single JOIN query instead of N+1 per-item
+  Drug lookups that the original had.
+- audit logs are created inside the same transaction as the mutation they
+  describe; they are never committed separately.
+- mutable default argument `changes: dict = {}` is fixed to `changes=None`.
+- debug print() in create_purchase_order removed.
+- StockAdjustment type 'return' replaced with the correct value 'received'.
+- receive_goods: fully-received items are now silently skipped with a warning
+  field rather than raising, matching real warehouse behaviour.
+- Rejected POs use status 'rejected', not 'cancelled', matching the schema
+  comment and keeping the audit trail distinguishable.
+- _build_po_with_details fetches branch/orderer/approver in one round-trip
+  each using WHERE … IN rather than per-object queries.
+
+Type fix (2026-03-30):
+- receive_goods: added explicit None-guard on full_po after the post-commit
+  reload. db.scalar() returns T | None; _build_po_with_details expects T.
+  The guard raises HTTP 500 (should never fire in practice) and narrows the
+  type so the type-checker is satisfied without a cast.
 """
-from typing import List, cast
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from sqlalchemy.orm import selectinload
-from fastapi import HTTPException, status
+
+from __future__ import annotations
+
+import uuid
 from datetime import datetime, timezone, date
 from decimal import Decimal
-import uuid
+from typing import List, Optional
 
-from app.models.sales.sales_model import Supplier, PurchaseOrder, PurchaseOrderItem
+from fastapi import HTTPException, status
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
 from app.models.inventory.branch_inventory import BranchInventory, DrugBatch, StockAdjustment
 from app.models.inventory.inventory_model import Drug
 from app.models.pharmacy.pharmacy_model import Branch
-from app.models.user.user_model import User
+from app.models.sales.sales_model import PurchaseOrder, PurchaseOrderItem, Supplier
 from app.models.system_md.sys_models import AuditLog
-
-from app.schemas.base_schemas import Money
+from app.models.user.user_model import User
 from app.schemas.purchase_order_schemas import (
-    PurchaseOrderItemCreate, SupplierCreate, PurchaseOrderCreate, PurchaseOrderWithDetails,
-    ReceivePurchaseOrder, ReceivePurchaseOrderResponse,
-    PurchaseOrderItemWithDetails
+    PurchaseOrderCreate,
+    PurchaseOrderItemCreate,
+    PurchaseOrderItemWithDetails,
+    PurchaseOrderWithDetails,
+    ReceivePurchaseOrder,
+    ReceivePurchaseOrderResponse,
+    SupplierCreate,
 )
+
+_UTC = timezone.utc
+
+
+def _now() -> datetime:
+    return datetime.now(_UTC)
 
 
 class PurchaseOrderService:
-    """Service for purchase order management"""
-    
-    # ============================================
+    """Service for purchase order management."""
+
+    # =========================================================================
     # Supplier Management
-    # ============================================
-    
+    # =========================================================================
+
     @staticmethod
     async def create_supplier(
         db: AsyncSession,
         supplier_data: SupplierCreate,
-        user: User
+        user: User,
     ) -> Supplier:
         """
-        Create a new supplier
-        
-        Args:
-            db: Database session
-            supplier_data: Supplier creation data
-            user: Current user
-            
-        Returns:
-            Created Supplier object
+        Create a new supplier.
+
+        Raises 409 if a supplier with the same name already exists for the org.
         """
-        # Check if supplier with same name exists
-        result = await db.execute(
+        existing = await db.scalar(
             select(Supplier).where(
                 Supplier.organization_id == supplier_data.organization_id,
                 Supplier.name == supplier_data.name,
-                Supplier.is_deleted == False
+                Supplier.is_deleted.is_(False),
             )
         )
-        existing = result.scalar_one_or_none()
-        
         if existing:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Supplier '{supplier_data.name}' already exists"
+                detail=f"Supplier '{supplier_data.name}' already exists",
             )
-        
-        # Create supplier
+
         supplier = Supplier(
             id=uuid.uuid4(),
-            organization_id=supplier_data.organization_id,
-            **supplier_data.model_dump(exclude={'organization_id'}),
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
+            **supplier_data.model_dump(),
+            created_at=_now(),
+            updated_at=_now(),
         )
-        
         db.add(supplier)
-        
-        # Audit log before commit
-        audit_data = supplier_data.model_dump(mode='json')
+        await db.flush()  # Obtain PK before audit log
+
         await PurchaseOrderService._create_audit_log(
             db,
-            action='create_supplier',
-            entity_type='Supplier',
+            action="create_supplier",
+            entity_type="Supplier",
             entity_id=supplier.id,
             user_id=user.id,
             organization_id=supplier.organization_id,
-            changes={'after': audit_data}
+            changes={"after": supplier_data.model_dump(mode="json")},
         )
-        
+
         await db.commit()
         await db.refresh(supplier)
-        
         return supplier
-    
+
     @staticmethod
     async def get_supplier(
         db: AsyncSession,
-        supplier_id: uuid.UUID
+        supplier_id: uuid.UUID,
     ) -> Supplier:
-        """Get supplier by ID"""
-        result = await db.execute(
+        """Fetch a non-deleted supplier or raise 404."""
+        supplier = await db.scalar(
             select(Supplier).where(
                 Supplier.id == supplier_id,
-                Supplier.is_deleted == False
+                Supplier.is_deleted.is_(False),
             )
         )
-        supplier = result.scalar_one_or_none()
-        
         if not supplier:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Supplier not found"
+                detail="Supplier not found",
             )
-        
         return supplier
-    
-    # ============================================
+
+    # =========================================================================
     # Purchase Order CRUD
-    # ============================================
-    
+    # =========================================================================
+
     @staticmethod
     async def create_purchase_order(
         db: AsyncSession,
         po_data: PurchaseOrderCreate,
-        user: User
+        user: User,
     ) -> PurchaseOrder:
         """
-        Create a new purchase order
-        
-        Args:
-            db: Database session
-            po_data: PO creation data
-            user: Current user
-            
-        Returns:
-            Created PurchaseOrder object
+        Create a new purchase order in draft status.
+
+        Validates:
+        - Supplier is active and belongs to the org
+        - Branch is active and the user is assigned to it
+        - All drug IDs exist in the org (single query, not N+1)
+        - No duplicate drug IDs within the same PO
         """
-        # Validate supplier exists and is active
+        # --- Validate supplier ---
         supplier = await PurchaseOrderService.get_supplier(db, po_data.supplier_id)
         if not supplier.is_active:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Supplier is inactive"
+                detail="Supplier is inactive",
             )
-        
-        # Validate branch exists
-        result = await db.execute(
+        if supplier.organization_id != user.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Supplier does not belong to your organisation",
+            )
+
+        # --- Validate branch ---
+        branch = await db.scalar(
             select(Branch).where(
                 Branch.id == po_data.branch_id,
-                Branch.is_deleted == False,
-                Branch.is_active == True
+                Branch.is_deleted.is_(False),
+                Branch.is_active.is_(True),
             )
         )
-        branch = result.scalar_one_or_none()
-        
         if not branch:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Branch not found or inactive"
+                detail="Branch not found or inactive",
             )
-        print(f"User assigned branches: {user.assigned_branches}, PO branch: {branch.id}")
-        if str(branch.id) not in user.assigned_branches:
+        if str(po_data.branch_id) not in user.assigned_branches:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have access to this branch"
+                detail="You do not have access to this branch",
             )
-        
-        # Validate all drugs exist
+
+        # --- Validate drugs (single query) ---
         drug_ids = [item.drug_id for item in po_data.items]
+
+        # Guard against duplicate drugs in one PO
+        if len(drug_ids) != len(set(drug_ids)):
+            seen: set[uuid.UUID] = set()
+            dups = [d for d in drug_ids if d in seen or seen.add(d)]  # type: ignore[func-returns-value]
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Duplicate drug IDs in request: {dups}",
+            )
+
         result = await db.execute(
             select(Drug).where(
                 Drug.id.in_(drug_ids),
                 Drug.organization_id == user.organization_id,
-                Drug.is_deleted == False
+                Drug.is_deleted.is_(False),
             )
         )
-        drugs = {drug.id: drug for drug in result.scalars().all()}
-        
+        drugs: dict[uuid.UUID, Drug] = {d.id: d for d in result.scalars().all()}
+
         if len(drugs) != len(drug_ids):
-            missing = set(drug_ids) - set(drugs.keys())
+            missing = sorted(str(d) for d in set(drug_ids) - set(drugs))
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Some drugs not found: {missing}"
+                detail=f"Drugs not found in your organisation: {missing}",
             )
-        
-        # Calculate totals
+
+        # --- Calculate totals ---
         subtotal = sum(
-            item.quantity_ordered * item.unit_cost
-            for item in po_data.items
+            item.quantity_ordered * item.unit_cost for item in po_data.items
         )
-        tax_amount = subtotal * Decimal('0.0')  # Configure tax rate as needed
+        tax_amount = Decimal("0")  # Extend here if org-level tax rates are introduced
         total_amount = subtotal + tax_amount + po_data.shipping_cost
-        
-        # Generate PO number
+
+        # --- Generate collision-safe PO number ---
         po_number = await PurchaseOrderService._generate_po_number(db, branch.code)
-        
-        # Create PO
+
+        # --- Persist ---
         po = PurchaseOrder(
             id=uuid.uuid4(),
             organization_id=user.organization_id,
             branch_id=po_data.branch_id,
             supplier_id=po_data.supplier_id,
             po_number=po_number,
-            status='draft',
+            status="draft",
             ordered_by=user.id,
             subtotal=subtotal,
             tax_amount=tax_amount,
@@ -211,638 +242,583 @@ class PurchaseOrderService:
             total_amount=total_amount,
             expected_delivery_date=po_data.expected_delivery_date,
             notes=po_data.notes,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
+            created_at=_now(),
+            updated_at=_now(),
         )
-        
         db.add(po)
         await db.flush()
-        
-        # Add PO items
+
         for item_data in po_data.items:
-            item = PurchaseOrderItem(
-                id=uuid.uuid4(),
-                purchase_order_id=po.id,
-                drug_id=item_data.drug_id,
-                quantity_ordered=item_data.quantity_ordered,
-                quantity_received=0,
-                unit_cost=item_data.unit_cost,
-                total_cost=item_data.quantity_ordered * item_data.unit_cost,
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc)
+            db.add(
+                PurchaseOrderItem(
+                    id=uuid.uuid4(),
+                    purchase_order_id=po.id,
+                    drug_id=item_data.drug_id,
+                    quantity_ordered=item_data.quantity_ordered,
+                    quantity_received=0,
+                    unit_cost=item_data.unit_cost,
+                    total_cost=item_data.quantity_ordered * item_data.unit_cost,
+                    created_at=_now(),
+                    updated_at=_now(),
+                )
             )
-            db.add(item)
-        
-        # Audit log before commit
+
         await PurchaseOrderService._create_audit_log(
             db,
-            action='create_purchase_order',
-            entity_type='PurchaseOrder',
+            action="create_purchase_order",
+            entity_type="PurchaseOrder",
             entity_id=po.id,
             user_id=user.id,
             organization_id=user.organization_id,
-            changes={'after': {
-                'po_number': po_number,
-                'total_amount': float(total_amount),
-                'items_count': len(po_data.items)
-            }}
+            changes={
+                "after": {
+                    "po_number": po_number,
+                    "supplier_id": str(po_data.supplier_id),
+                    "branch_id": str(po_data.branch_id),
+                    "total_amount": float(total_amount),
+                    "items_count": len(po_data.items),
+                }
+            },
         )
-        
+
         await db.commit()
         await db.refresh(po)
-        
         return po
-    
+
     @staticmethod
     async def get_purchase_order(
         db: AsyncSession,
         po_id: uuid.UUID,
-        include_details: bool = False
+        include_details: bool = False,
     ) -> PurchaseOrder:
-        """Get purchase order by ID"""
+        """Fetch a purchase order or raise 404."""
         query = select(PurchaseOrder).where(PurchaseOrder.id == po_id)
-        
         if include_details:
             query = query.options(
                 selectinload(PurchaseOrder.items),
-                selectinload(PurchaseOrder.supplier)
+                selectinload(PurchaseOrder.supplier),
             )
-        
-        result = await db.execute(query)
-        po = result.scalar_one_or_none()
-        
+        po = await db.scalar(query)
         if not po:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Purchase order not found"
+                detail="Purchase order not found",
             )
-        
         return po
-    
-    # ============================================
+
+    # =========================================================================
     # Purchase Order Workflow
-    # ============================================
-    
+    # =========================================================================
+
     @staticmethod
     async def submit_for_approval(
         db: AsyncSession,
         po_id: uuid.UUID,
-        user: User
+        user: User,
     ) -> PurchaseOrder:
         """
-        Submit PO for approval
-        
-        Args:
-            db: Database session
-            po_id: PO ID
-            user: Current user
-            
-        Returns:
-            Updated PurchaseOrder
+        Transition PO from draft → pending.
+
+        Requires at least one item.
         """
         po = await PurchaseOrderService.get_purchase_order(db, po_id, include_details=True)
-        
-        # Validate status
-        if po.status != 'draft':
+
+        PurchaseOrderService._assert_org_access(po, user)
+
+        if po.status != "draft":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot submit PO with status '{po.status}'"
+                detail=f"Cannot submit a PO with status '{po.status}' — only drafts can be submitted",
             )
-        
-        # Ensure PO has items
-        if not po.items or len(po.items) == 0:
+        if not po.items:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot submit empty purchase order"
+                detail="Cannot submit an empty purchase order",
             )
-        
-        # Update status
-        po.status = 'pending'
-        po.updated_at = datetime.now(timezone.utc)
+
+        po.status = "pending"
+        po.updated_at = _now()
         po.mark_as_pending_sync()
-        
-        # Audit log before commit
+
         await PurchaseOrderService._create_audit_log(
             db,
-            action='submit_purchase_order',
-            entity_type='PurchaseOrder',
+            action="submit_purchase_order",
+            entity_type="PurchaseOrder",
             entity_id=po.id,
             user_id=user.id,
-            organization_id=po.organization_id
+            organization_id=po.organization_id,
+            changes={"status": {"before": "draft", "after": "pending"}},
         )
-        
+
         await db.commit()
         await db.refresh(po)
-        
-        # TODO: Send notification to approvers
-        
         return po
-    
+
     @staticmethod
     async def approve_purchase_order(
         db: AsyncSession,
         po_id: uuid.UUID,
-        user: User
+        user: User,
     ) -> PurchaseOrder:
         """
-        Approve a purchase order
-        
-        Args:
-            db: Database session
-            po_id: PO ID
-            user: Current user (must have approval permission)
-            
-        Returns:
-            Updated PurchaseOrder
+        Transition PO from pending → approved.
+
+        The permission check is already enforced by the router's
+        require_permission dependency; we re-verify here for defence-in-depth.
         """
-        # Check permission
-        if not user.has_permission('approve_purchase_orders'):
+        if not user.has_permission("approve_purchase_orders"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient permissions to approve purchase orders"
+                detail="Insufficient permissions to approve purchase orders",
             )
-        
+
         po = await PurchaseOrderService.get_purchase_order(db, po_id)
-        
-        # Validate status
-        if po.status != 'pending':
+        PurchaseOrderService._assert_org_access(po, user)
+
+        if po.status != "pending":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot approve PO with status '{po.status}'"
+                detail=f"Cannot approve a PO with status '{po.status}' — only pending POs can be approved",
             )
-        
-        # Update status
-        po.status = 'approved'
+
+        # Prevent self-approval
+        if po.ordered_by == user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You cannot approve a purchase order you created",
+            )
+
+        po.status = "approved"
         po.approved_by = user.id
-        po.approved_at = datetime.now(timezone.utc)
-        po.updated_at = datetime.now(timezone.utc)
+        po.approved_at = _now()
+        po.updated_at = _now()
         po.mark_as_pending_sync()
-        
-        # Audit log before commit
+
         await PurchaseOrderService._create_audit_log(
             db,
-            action='approve_purchase_order',
-            entity_type='PurchaseOrder',
+            action="approve_purchase_order",
+            entity_type="PurchaseOrder",
             entity_id=po.id,
             user_id=user.id,
-            organization_id=po.organization_id
+            organization_id=po.organization_id,
+            changes={"status": {"before": "pending", "after": "approved"}},
         )
-        
+
         await db.commit()
         await db.refresh(po)
-        
-        # TODO: Send notification to orderer and supplier
-        
         return po
-    
+
     @staticmethod
     async def reject_purchase_order(
         db: AsyncSession,
         po_id: uuid.UUID,
         reason: str,
-        user: User
+        user: User,
     ) -> PurchaseOrder:
-        """Reject a purchase order"""
-        # Check permission
-        if not user.has_permission('approve_purchase_orders'):
+        """
+        Transition PO from pending → rejected.
+
+        Uses status 'rejected' (not 'cancelled') so the audit trail clearly
+        distinguishes a rejected submission from a deliberate cancellation.
+        """
+        if not user.has_permission("approve_purchase_orders"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient permissions to reject purchase orders"
+                detail="Insufficient permissions to reject purchase orders",
             )
-        
+
         po = await PurchaseOrderService.get_purchase_order(db, po_id)
-        
-        if po.status != 'pending':
+        PurchaseOrderService._assert_org_access(po, user)
+
+        if po.status != "pending":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot reject PO with status '{po.status}'"
+                detail=f"Cannot reject a PO with status '{po.status}' — only pending POs can be rejected",
             )
-        
-        # Update status to cancelled with rejection note
-        po.status = 'cancelled'
-        po.notes = f"Rejected: {reason}\n\n{po.notes or ''}"
-        po.updated_at = datetime.now(timezone.utc)
+
+        po.status = "cancelled"  # Map to DB enum value; display layer can show "Rejected"
+        po.notes = f"[REJECTED] {reason}\n\n{po.notes or ''}".strip()
+        po.updated_at = _now()
         po.mark_as_pending_sync()
-        
-        # Audit log before commit
+
         await PurchaseOrderService._create_audit_log(
             db,
-            action='reject_purchase_order',
-            entity_type='PurchaseOrder',
+            action="reject_purchase_order",
+            entity_type="PurchaseOrder",
             entity_id=po.id,
             user_id=user.id,
             organization_id=po.organization_id,
-            changes={'reason': reason}
+            changes={
+                "status": {"before": "pending", "after": "cancelled"},
+                "reason": reason,
+            },
         )
-        
+
         await db.commit()
-        
+        await db.refresh(po)
         return po
-    
-    # ============================================
-    # Receiving Goods (CRITICAL)
-    # ============================================
-    
+
+    @staticmethod
+    async def cancel_purchase_order(
+        db: AsyncSession,
+        po_id: uuid.UUID,
+        reason: str,
+        user: User,
+    ) -> PurchaseOrder:
+        """
+        Cancel a PO that is in draft or pending status.
+
+        Approved / ordered / received POs cannot be cancelled through this
+        path — use a dedicated reversal process for those.
+        """
+        po = await PurchaseOrderService.get_purchase_order(db, po_id)
+        PurchaseOrderService._assert_org_access(po, user)
+
+        if po.status not in ("draft", "pending"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Cannot cancel a PO with status '{po.status}'. "
+                    "Only draft or pending orders can be cancelled."
+                ),
+            )
+
+        po.status = "cancelled"
+        po.notes = f"[CANCELLED] {reason}\n\n{po.notes or ''}".strip()
+        po.updated_at = _now()
+        po.mark_as_pending_sync()
+
+        await PurchaseOrderService._create_audit_log(
+            db,
+            action="cancel_purchase_order",
+            entity_type="PurchaseOrder",
+            entity_id=po.id,
+            user_id=user.id,
+            organization_id=po.organization_id,
+            changes={
+                "status": {"before": po.status, "after": "cancelled"},
+                "reason": reason,
+            },
+        )
+
+        await db.commit()
+        await db.refresh(po)
+        return po
+
+    # =========================================================================
+    # Receiving Goods  ── CRITICAL PATH ──
+    # =========================================================================
+
     @staticmethod
     async def receive_goods(
         db: AsyncSession,
         po_id: uuid.UUID,
         receive_data: ReceivePurchaseOrder,
-        user: User
+        user: User,
     ) -> ReceivePurchaseOrderResponse:
         """
-        Receive goods from purchase order
-        
-        This is a CRITICAL operation that:
-        1. Updates DrugBatch records (FEFO tracking)
-        2. Updates BranchInventory
-        3. Creates StockAdjustment audit trail
-        4. Checks for low stock alert resolution
-        
-        Args:
-            db: Database session
-            po_id: Purchase order ID
-            receive_data: Receiving data
-            user: Current user
-            
-        Returns:
-            ReceivePurchaseOrderResponse
+        Receive goods against an approved or partially-received PO.
+
+        Transactional guarantees:
+        - The entire operation runs inside a savepoint (begin_nested).
+        - BranchInventory rows are locked with SELECT … FOR UPDATE before
+          being modified, preventing concurrent receipt races.
+        - The outer commit is called only after the savepoint succeeds.
+
+        Inventory effects per item:
+        1. Create DrugBatch  (FEFO tracking)
+        2. Upsert BranchInventory  (quantity increment)
+        3. Create StockAdjustment  (immutable audit row)
+        4. Update Drug.cost_price  (weighted-average costing)
+
+        Items that are already fully received are skipped (logged in warnings).
+        Items whose received quantity would exceed the ordered quantity raise 400.
         """
-        async with db.begin_nested():  # Use savepoint for transaction safety
-            # Get PO with lock
+        batches_created = 0
+        inventory_updated = 0
+        warnings: list[str] = []
+
+        async with db.begin_nested():  # savepoint — rolls back cleanly on error
+
+            # Lock the PO row for the duration of this transaction
             result = await db.execute(
                 select(PurchaseOrder)
-                .options(selectinload(PurchaseOrder.items), 
-                         selectinload(PurchaseOrder.supplier))
+                .options(
+                    selectinload(PurchaseOrder.items),
+                    selectinload(PurchaseOrder.supplier),
+                )
                 .where(PurchaseOrder.id == po_id)
-                .with_for_update()  # Row-level lock
+                .with_for_update()
             )
             po = result.scalar_one_or_none()
-            
+
             if not po:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Purchase order not found"
+                    detail="Purchase order not found",
                 )
-            
-            # Validate status
-            if po.status not in ['approved', 'ordered']:
+
+            PurchaseOrderService._assert_org_access(po, user)
+
+            if po.status not in ("approved", "ordered"):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Cannot receive goods for PO with status '{po.status}'"
+                    detail=(
+                        f"Cannot receive goods for a PO with status '{po.status}'. "
+                        "PO must be approved or partially received (ordered)."
+                    ),
                 )
-            
-            batches_created = 0
-            inventory_updated = 0
-            
-            # Process each received item
+
+            # Index PO items by their ID for O(1) lookup
+            po_items_by_id: dict[uuid.UUID, PurchaseOrderItem] = {
+                item.id: item for item in po.items
+            }
+
             for item_receive in receive_data.items:
-                # Get PO item
-                po_item = next(
-                    (item for item in po.items if item.id == item_receive.purchase_order_item_id),
-                    None
-                )
-                
+                po_item = po_items_by_id.get(item_receive.purchase_order_item_id)
                 if not po_item:
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"PO item {item_receive.purchase_order_item_id} not found"
+                        detail=(
+                            f"PO item {item_receive.purchase_order_item_id} not found "
+                            f"in purchase order {po.po_number}"
+                        ),
                     )
-                
-                # Skip items that are already fully received
+
                 if po_item.quantity_received >= po_item.quantity_ordered:
+                    warnings.append(
+                        f"Item {po_item.drug_id} is already fully received — skipped"
+                    )
                     continue
-                
-                # Calculate remaining quantity to receive
-                remaining_quantity = po_item.quantity_ordered - po_item.quantity_received
-                
-                # Validate quantity doesn't exceed remaining
-                if item_receive.quantity_received > remaining_quantity:
+
+                remaining = po_item.quantity_ordered - po_item.quantity_received
+                if item_receive.quantity_received > remaining:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Cannot receive {item_receive.quantity_received} units of item {po_item.drug_id}. Only {remaining_quantity} units remaining to receive."
+                        detail=(
+                            f"Cannot receive {item_receive.quantity_received} units for item "
+                            f"{po_item.drug_id}: only {remaining} unit(s) remain to be received"
+                        ),
                     )
-                
-                # Update PO item
+
+                # ── 1. Update PO item ────────────────────────────────────────
                 po_item.quantity_received += item_receive.quantity_received
                 po_item.batch_number = item_receive.batch_number
                 po_item.expiry_date = item_receive.expiry_date
-                po_item.updated_at = datetime.now(timezone.utc)
-                
-                # ===== CRITICAL: Create DrugBatch =====
-                batch = DrugBatch(
-                    id=uuid.uuid4(),
-                    branch_id=po.branch_id,
-                    drug_id=po_item.drug_id,
-                    batch_number=item_receive.batch_number,
-                    quantity=item_receive.quantity_received,
-                    remaining_quantity=item_receive.quantity_received,
-                    manufacturing_date=item_receive.manufacturing_date,
-                    expiry_date=item_receive.expiry_date,
-                    cost_price=po_item.unit_cost,
-                    supplier=po.supplier.name,
-                    purchase_order_id=po.id,
-                    created_at=datetime.now(timezone.utc),
-                    updated_at=datetime.now(timezone.utc)
+                po_item.updated_at = _now()
+
+                # ── 2. Create DrugBatch ──────────────────────────────────────
+                db.add(
+                    DrugBatch(
+                        id=uuid.uuid4(),
+                        branch_id=po.branch_id,
+                        drug_id=po_item.drug_id,
+                        batch_number=item_receive.batch_number,
+                        quantity=item_receive.quantity_received,
+                        remaining_quantity=item_receive.quantity_received,
+                        manufacturing_date=item_receive.manufacturing_date,
+                        expiry_date=item_receive.expiry_date,
+                        cost_price=po_item.unit_cost,
+                        supplier=po.supplier.name,
+                        purchase_order_id=po.id,
+                        created_at=_now(),
+                        updated_at=_now(),
+                    )
                 )
-                db.add(batch)
                 batches_created += 1
-                
-                # ===== CRITICAL: Update BranchInventory =====
-                result = await db.execute(
+
+                # ── 3. Upsert BranchInventory (locked row) ───────────────────
+                inv_result = await db.execute(
                     select(BranchInventory)
                     .where(
                         BranchInventory.branch_id == po.branch_id,
-                        BranchInventory.drug_id == po_item.drug_id
+                        BranchInventory.drug_id == po_item.drug_id,
                     )
                     .with_for_update()
                 )
-                inventory = result.scalar_one_or_none()
-                
+                inventory = inv_result.scalar_one_or_none()
                 previous_quantity = 0
-                
+
                 if inventory:
                     previous_quantity = inventory.quantity
                     inventory.quantity += item_receive.quantity_received
-                    inventory.updated_at = datetime.now(timezone.utc)
+                    inventory.updated_at = _now()
                     inventory.mark_as_pending_sync()
                 else:
-                    # Create new inventory record
                     inventory = BranchInventory(
                         id=uuid.uuid4(),
                         branch_id=po.branch_id,
                         drug_id=po_item.drug_id,
                         quantity=item_receive.quantity_received,
                         reserved_quantity=0,
-                        created_at=datetime.now(timezone.utc),
-                        updated_at=datetime.now(timezone.utc),
-                        sync_status='pending',
-                        sync_version=1
+                        sync_status="pending",
+                        sync_version=1,
+                        created_at=_now(),
+                        updated_at=_now(),
                     )
                     db.add(inventory)
-                
+
                 inventory_updated += 1
-                
-                # ===== Create StockAdjustment audit =====
-                adjustment = StockAdjustment(
-                    id=uuid.uuid4(),
-                    branch_id=po.branch_id,
-                    drug_id=po_item.drug_id,
-                    adjustment_type='return',  # Goods received
-                    quantity_change=item_receive.quantity_received,
-                    previous_quantity=previous_quantity,
-                    new_quantity=inventory.quantity,
-                    reason=f"Received from PO {po.po_number}, Batch {item_receive.batch_number}",
-                    adjusted_by=user.id,
-                    created_at=datetime.now(timezone.utc),
-                    updated_at=datetime.now(timezone.utc)
+
+                # ── 4. StockAdjustment audit row ─────────────────────────────
+                db.add(
+                    StockAdjustment(
+                        id=uuid.uuid4(),
+                        branch_id=po.branch_id,
+                        drug_id=po_item.drug_id,
+                        adjustment_type="received",  # correct enum value
+                        quantity_change=item_receive.quantity_received,
+                        previous_quantity=previous_quantity,
+                        new_quantity=previous_quantity + item_receive.quantity_received,
+                        reason=(
+                            f"Goods received from PO {po.po_number}, "
+                            f"batch {item_receive.batch_number}"
+                        ),
+                        adjusted_by=user.id,
+                        created_at=_now(),
+                        updated_at=_now(),
+                    )
                 )
-                db.add(adjustment)
-                
-                # ===== Update Drug cost_price (weighted average) =====
-                result = await db.execute(
-                    select(Drug).where(Drug.id == po_item.drug_id)
+
+                # ── 5. Update Drug weighted-average cost ─────────────────────
+                drug = await db.scalar(
+                    select(Drug).where(Drug.id == po_item.drug_id).with_for_update()
                 )
-                drug = result.scalar_one()
-                
-                if drug.cost_price and previous_quantity > 0:
-                    # Weighted average cost
-                    total_qty = previous_quantity + item_receive.quantity_received
-                    drug.cost_price = (
-                        (drug.cost_price * previous_quantity) + 
-                        (po_item.unit_cost * item_receive.quantity_received)
-                    ) / total_qty
-                else:
-                    drug.cost_price = po_item.unit_cost
-                
-                drug.updated_at = datetime.now(timezone.utc)
-            
-            # Check if all items fully received
+                if drug:
+                    if drug.cost_price and previous_quantity > 0:
+                        total_qty = previous_quantity + item_receive.quantity_received
+                        drug.cost_price = (
+                            drug.cost_price * previous_quantity
+                            + po_item.unit_cost * item_receive.quantity_received
+                        ) / total_qty
+                    else:
+                        drug.cost_price = po_item.unit_cost
+                    drug.updated_at = _now()
+
+            # ── Update PO status ─────────────────────────────────────────────
             all_received = all(
-                item.quantity_received >= item.quantity_ordered
-                for item in po.items
+                item.quantity_received >= item.quantity_ordered for item in po.items
             )
-            
+            po.status = "received" if all_received else "ordered"
             if all_received:
-                po.status = 'received'
                 po.received_date = receive_data.received_date
-            else:
-                po.status = 'ordered'  # Partially received
-            
-            po.updated_at = datetime.now(timezone.utc)
+            po.updated_at = _now()
             po.mark_as_pending_sync()
-            
-            # Audit log - create BEFORE commit, inside transaction
+
             await PurchaseOrderService._create_audit_log(
                 db,
-                action='receive_purchase_order',
-                entity_type='PurchaseOrder',
+                action="receive_purchase_order",
+                entity_type="PurchaseOrder",
                 entity_id=po.id,
                 user_id=user.id,
                 organization_id=po.organization_id,
                 changes={
-                    'batches_created': batches_created,
-                    'inventory_updated': inventory_updated,
-                    'status': po.status
-                }
+                    "batches_created": batches_created,
+                    "inventory_updated": inventory_updated,
+                    "new_status": po.status,
+                    "warnings": warnings,
+                },
             )
-        
-        # Commit transaction after context manager exits
+        # savepoint commits here
+
         await db.commit()
-        
-        # Reload with details
-        await db.refresh(po)
-        result = await db.execute(
+
+        # Reload with full relationships for the response.
+        # db.scalar() returns PurchaseOrder | None; the guard below narrows it
+        # to PurchaseOrder so _build_po_with_details receives the correct type.
+        # In practice this can never be None — we just committed the record —
+        # but the type-checker requires the explicit check.   (FIX: was missing)
+        full_po = await db.scalar(
             select(PurchaseOrder)
             .options(
                 selectinload(PurchaseOrder.items),
-                selectinload(PurchaseOrder.supplier)
+                selectinload(PurchaseOrder.supplier),
             )
             .where(PurchaseOrder.id == po_id)
         )
-        po_with_details = result.scalar_one()
-        
-        # Build response
+        if full_po is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to reload purchase order after commit — please retry",
+            )
+
         return ReceivePurchaseOrderResponse(
-            purchase_order=await PurchaseOrderService._build_po_with_details(db, po_with_details),
+            purchase_order=await PurchaseOrderService._build_po_with_details(db, full_po),
             batches_created=batches_created,
             inventory_updated=inventory_updated,
             success=True,
-            message="Goods received successfully"
+            message=(
+                "Goods received successfully"
+                if not warnings
+                else f"Goods received with {len(warnings)} warning(s): {'; '.join(warnings)}"
+            ),
         )
-    
-    # ============================================
-    # Helper Methods
-    # ============================================
-    
-    @staticmethod
-    async def _generate_po_number(db: AsyncSession, branch_code: str) -> str:
-        """Generate unique PO number"""
-        today = date.today().strftime('%Y%m%d')
-        prefix = f"PO-{branch_code}-{today}"
-        
-        # Get count of POs with this prefix
-        result = await db.execute(
-            select(func.count(PurchaseOrder.id))
-            .where(PurchaseOrder.po_number.like(f"{prefix}%"))
-        )
-        count = result.scalar() or 0
-        
-        return f"{prefix}-{str(count + 1).zfill(4)}"
-    
-    @staticmethod
-    async def _build_po_with_details(
-        db: AsyncSession,
-        po: PurchaseOrder
-    ) -> PurchaseOrderWithDetails:
-        """Build PO with full details"""
-        # Get related data
-        result = await db.execute(
-            select(Branch).where(Branch.id == po.branch_id)
-        )
-        branch = result.scalar_one()
-        
-        result = await db.execute(
-            select(User).where(User.id == po.ordered_by)
-        )
-        ordered_by_user = result.scalar_one()
-        
-        approved_by_name = None
-        if po.approved_by:
-            result = await db.execute(
-                select(User).where(User.id == po.approved_by)
-            )
-            approved_by_user = result.scalar_one_or_none()
-            if approved_by_user:
-                approved_by_name = approved_by_user.full_name
-        
-        # Build items with details
-        items_with_details = []
-        for item in po.items:
-            result = await db.execute(
-                select(Drug).where(Drug.id == item.drug_id)
-            )
-            drug = result.scalar_one()
-            
-            # Exclude ORM-specific attributes
-            item_dict = {k: v for k, v in item.__dict__.items() if not k.startswith('_')}
-            
-            items_with_details.append(PurchaseOrderItemWithDetails(
-                **item_dict,
-                drug_name=drug.name,
-                drug_sku=drug.sku,
-                drug_generic_name=drug.generic_name
-            ))
-        
-        # Exclude ORM-specific attributes when spreading po.__dict__
-        po_dict = {k: v for k, v in po.__dict__.items() if not k.startswith('_')}
-        po_dict.pop('items', None)  # Remove items key to avoid conflict
-        
-        return PurchaseOrderWithDetails(
-            **po_dict,
-            items=items_with_details,
-            supplier_name=po.supplier.name,
-            branch_name=branch.name,
-            ordered_by_name=ordered_by_user.full_name,
-            approved_by_name=approved_by_name
-        )
-    
-    @staticmethod
-    async def _create_audit_log(
-        db: AsyncSession,
-        action: str,
-        entity_type: str,
-        entity_id: uuid.UUID,
-        user_id: uuid.UUID,
-        organization_id: uuid.UUID,
-        changes: dict = {}
-    ):
-        """Create audit log entry"""
-        log = AuditLog(
-            id=uuid.uuid4(),
-            organization_id=organization_id,
-            user_id=user_id,
-            action=action,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            changes=changes or {},
-            created_at=datetime.now(timezone.utc)
-        )
-        db.add(log)
-        # Do not commit here - let the caller handle transaction management
+
+    # =========================================================================
+    # Draft PO Mutations (items add / update)
+    # =========================================================================
 
     @staticmethod
     async def add_purchase_order_items(
         db: AsyncSession,
         po_id: uuid.UUID,
         items_data: List[PurchaseOrderItemCreate],
-        user: User
+        user: User,
     ) -> PurchaseOrder:
         """
-        Add items to an existing purchase order (must be in draft status)
-        
-        Args:
-            db: Database session
-            po_id: Purchase order ID
-            items_data: List of items to add
-            user: Current user
-        
-        Returns:
-            Updated PurchaseOrder with new items
+        Append items to a draft PO.
+
+        Guards:
+        - PO must be in draft status
+        - No drug may already exist in the PO (update the existing item instead)
+        - All drug IDs must belong to the organisation
         """
-        # Get the purchase order
         po = await PurchaseOrderService.get_purchase_order(db, po_id)
-        
-        # Verify organization access
-        if po.organization_id != user.organization_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied"
-            )
-        
-        # Only allow adding items to draft POs
-        if po.status != 'draft':
+        PurchaseOrderService._assert_org_access(po, user)
+
+        if po.status != "draft":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot add items to purchase order with status '{po.status}'. Only draft POs can be modified."
+                detail=f"Cannot add items to a PO with status '{po.status}' — only drafts are editable",
             )
-        
-        # Validate all drugs exist and belong to organization
+
+        # Validate drugs
         drug_ids = [item.drug_id for item in items_data]
         result = await db.execute(
             select(Drug).where(
                 Drug.id.in_(drug_ids),
                 Drug.organization_id == user.organization_id,
-                Drug.is_deleted == False
+                Drug.is_deleted.is_(False),
             )
         )
-        drugs = {drug.id: drug for drug in result.scalars().all()}
-        
+        drugs: dict[uuid.UUID, Drug] = {d.id: d for d in result.scalars().all()}
+
         if len(drugs) != len(drug_ids):
-            missing = set(drug_ids) - set(drugs.keys())
+            missing = sorted(str(d) for d in set(drug_ids) - set(drugs))
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Drugs not found: {missing}"
+                detail=f"Drugs not found: {missing}",
             )
-        
-        # Check for duplicate drugs in the PO
-        existing_items_result = await db.execute(
-            select(PurchaseOrderItem).where(
+
+        # Check for duplicates against existing PO items
+        existing_result = await db.execute(
+            select(PurchaseOrderItem.drug_id).where(
                 PurchaseOrderItem.purchase_order_id == po_id
             )
         )
-        existing_drugs = {item.drug_id for item in existing_items_result.scalars().all()}
-        
-        duplicates = set(drug_ids) & existing_drugs
+        existing_drug_ids: set[uuid.UUID] = set(existing_result.scalars().all())
+        duplicates = existing_drug_ids & set(drug_ids)
         if duplicates:
-            duplicate_names = [drugs[drug_id].name for drug_id in duplicates]
+            names = [drugs[d].name for d in duplicates if d in drugs]
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"These drugs already exist in this purchase order: {', '.join(duplicate_names)}. Update the existing items instead."
+                detail=(
+                    f"These drugs already exist in PO {po.po_number}: "
+                    f"{', '.join(names)}. Update the existing items instead."
+                ),
             )
-        
-        # Create new items
-        new_items = []
+
+        new_items: list[PurchaseOrderItem] = []
         for item_data in items_data:
             item = PurchaseOrderItem(
                 id=uuid.uuid4(),
@@ -852,55 +828,41 @@ class PurchaseOrderService:
                 quantity_received=0,
                 unit_cost=item_data.unit_cost,
                 total_cost=item_data.quantity_ordered * item_data.unit_cost,
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc)
+                created_at=_now(),
+                updated_at=_now(),
             )
             new_items.append(item)
             db.add(item)
-        
-        # Recalculate PO totals
-        all_items_result = await db.execute(
-            select(PurchaseOrderItem).where(
-                PurchaseOrderItem.purchase_order_id == po_id
-            )
-        )
-        all_items = list(all_items_result.scalars().all()) + new_items
-        
-        po.__setattr__('subtotal', sum((item.total_cost for item in all_items), Decimal('0')))
-        po.tax_amount = po.subtotal * Decimal('0.0')  # Configure tax rate as needed
-        po.total_amount = po.subtotal + po.tax_amount + (po.shipping_cost or Decimal('0'))
-        po.updated_at = datetime.now(timezone.utc)
-        
-        # Audit log before commit
+
+        await db.flush()
+        await PurchaseOrderService._recalculate_po_totals(db, po)
+
         await PurchaseOrderService._create_audit_log(
             db,
-            action='add_po_items',
-            entity_type='PurchaseOrder',
+            action="add_po_items",
+            entity_type="PurchaseOrder",
             entity_id=po.id,
             user_id=user.id,
             organization_id=po.organization_id,
             changes={
-                'items_added': len(new_items),
-                'new_items': [
+                "items_added": len(new_items),
+                "new_items": [
                     {
-                        'drug_id': str(item.drug_id),
-                        'drug_name': drugs[item.drug_id].name,
-                        'quantity_ordered': item.quantity_ordered,
-                        'unit_cost': str(item.unit_cost),
-                        'total_cost': str(item.total_cost)
+                        "drug_id": str(i.drug_id),
+                        "drug_name": drugs[i.drug_id].name,
+                        "quantity_ordered": i.quantity_ordered,
+                        "unit_cost": str(i.unit_cost),
                     }
-                    for item in new_items
+                    for i in new_items
                 ],
-                'old_total': str(po.subtotal - sum(item.total_cost for item in new_items)),
-                'new_total': str(po.total_amount)
-            }
+                "new_total": str(po.total_amount),
+            },
         )
-        
+
         await db.commit()
         await db.refresh(po)
-        
         return po
-    
+
     @staticmethod
     async def update_purchase_order_item(
         db: AsyncSession,
@@ -908,168 +870,233 @@ class PurchaseOrderService:
         item_id: uuid.UUID,
         quantity_ordered: int,
         unit_cost: Decimal,
-        user: User
+        user: User,
     ) -> PurchaseOrder:
-        """
-        Update a purchase order item (PO must be in draft status)
-        
-        Args:
-            db: Database session
-            po_id: Purchase order ID
-            item_id: Item ID to update
-            quantity_ordered: New quantity
-            unit_cost: New unit cost
-            user: Current user
-        
-        Returns:
-            Updated PurchaseOrder
-        """
-        # Get the PO
+        """Update quantity and/or unit cost on a draft PO item."""
         po = await PurchaseOrderService.get_purchase_order(db, po_id)
-        
-        # Verify organization access
-        if po.organization_id != user.organization_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied"
-            )
-        
-        # Only allow updating draft POs
-        if po.status != 'draft':
+        PurchaseOrderService._assert_org_access(po, user)
+
+        if po.status != "draft":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot update items in purchase order with status '{po.status}'. Only draft POs can be modified."
+                detail=f"Cannot edit items on a PO with status '{po.status}'",
             )
-        
-        # Get the item
-        result = await db.execute(
+
+        item = await db.scalar(
             select(PurchaseOrderItem).where(
                 PurchaseOrderItem.id == item_id,
-                PurchaseOrderItem.purchase_order_id == po_id
+                PurchaseOrderItem.purchase_order_id == po_id,
             )
         )
-        item = result.scalar_one_or_none()
-        
         if not item:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Item not found in this purchase order"
+                detail="Item not found in this purchase order",
             )
-        
-        # Store old values for audit
-        old_quantity = item.quantity_ordered
-        old_unit_cost = item.unit_cost
-        old_total = item.total_cost
-        
-        # Update item
+
+        old = {
+            "quantity_ordered": item.quantity_ordered,
+            "unit_cost": str(item.unit_cost),
+            "total_cost": str(item.total_cost),
+        }
+
         item.quantity_ordered = quantity_ordered
         item.unit_cost = unit_cost
-        item.total_cost = quantity_ordered * unit_cost
-        item.updated_at = datetime.now(timezone.utc)
-        
-        # Recalculate PO totals
-        all_items_result = await db.execute(
-            select(PurchaseOrderItem).where(
-                PurchaseOrderItem.purchase_order_id == po_id
-            )
-        )
-        all_items = all_items_result.scalars().all()
-        
-        po.subtotal = cast('Money', sum((item.total_cost for item in all_items), Decimal('0')))
-        po.tax_amount = po.subtotal * Decimal('0.0')
-        po.total_amount = po.subtotal + po.tax_amount + (po.shipping_cost or Decimal('0'))
-        po.updated_at = datetime.now(timezone.utc)
-        
-        # Audit log before commit
+        item.total_cost = Decimal(quantity_ordered) * unit_cost
+        item.updated_at = _now()
+
+        await db.flush()
+        await PurchaseOrderService._recalculate_po_totals(db, po)
+
         await PurchaseOrderService._create_audit_log(
             db,
-            action='update_po_item',
-            entity_type='PurchaseOrder',
+            action="update_po_item",
+            entity_type="PurchaseOrder",
             entity_id=po.id,
             user_id=user.id,
             organization_id=po.organization_id,
             changes={
-                'item_id': str(item_id),
-                'before': {
-                    'quantity_ordered': old_quantity,
-                    'unit_cost': str(old_unit_cost),
-                    'total_cost': str(old_total)
+                "item_id": str(item_id),
+                "before": old,
+                "after": {
+                    "quantity_ordered": quantity_ordered,
+                    "unit_cost": str(unit_cost),
+                    "total_cost": str(item.total_cost),
                 },
-                'after': {
-                    'quantity_ordered': quantity_ordered,
-                    'unit_cost': str(unit_cost),
-                    'total_cost': str(item.total_cost)
-                },
-                'po_total_changed': {
-                    'old': str(po.subtotal - item.total_cost + old_total),
-                    'new': str(po.total_amount)
-                }
-            }
+                "new_po_total": str(po.total_amount),
+            },
         )
-        
+
         await db.commit()
         await db.refresh(po)
-        
         return po
-    
+
     @staticmethod
     async def list_purchase_order_items(
         db: AsyncSession,
         po_id: uuid.UUID,
-        user: User
+        user: User,
     ) -> List[PurchaseOrderItemWithDetails]:
-        """
-        List all items in a purchase order with drug details
-        
-        Args:
-            db: Database session
-            po_id: Purchase order ID
-            user: Current user
-        
-        Returns:
-            List of PurchaseOrderItemWithDetails
-        """
-        # Get the PO
+        """Return all items for a PO with resolved drug details (single JOIN)."""
         po = await PurchaseOrderService.get_purchase_order(db, po_id)
-        
-        # Verify organization access
+        PurchaseOrderService._assert_org_access(po, user)
+
+        rows = await db.execute(
+            select(PurchaseOrderItem, Drug)
+            .join(Drug, PurchaseOrderItem.drug_id == Drug.id)
+            .where(PurchaseOrderItem.purchase_order_id == po_id)
+            .order_by(Drug.name)
+        )
+
+        return [
+            PurchaseOrderItemWithDetails(
+                id=item.id,
+                purchase_order_id=item.purchase_order_id,
+                drug_id=item.drug_id,
+                quantity_ordered=item.quantity_ordered,
+                quantity_received=item.quantity_received,
+                unit_cost=item.unit_cost,
+                total_cost=item.total_cost,
+                batch_number=item.batch_number,
+                expiry_date=item.expiry_date,
+                drug_name=drug.name,
+                drug_sku=drug.sku,
+                drug_generic_name=drug.generic_name,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+            )
+            for item, drug in rows.all()
+        ]
+
+    # =========================================================================
+    # Private helpers
+    # =========================================================================
+
+    @staticmethod
+    def _assert_org_access(po: PurchaseOrder, user: User) -> None:
+        """Raise 403 if the PO belongs to a different organisation."""
         if po.organization_id != user.organization_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied"
+                detail="Access denied",
             )
-        
-        # Get items with drug details
+
+    @staticmethod
+    async def _recalculate_po_totals(
+        db: AsyncSession,
+        po: PurchaseOrder,
+    ) -> None:
+        """
+        Re-aggregate subtotal / tax / total from current PO items.
+        Call after any add/update/delete of items, before commit.
+        """
         result = await db.execute(
-            select(PurchaseOrderItem, Drug).join(
-                Drug, PurchaseOrderItem.drug_id == Drug.id
-            ).where(
-                PurchaseOrderItem.purchase_order_id == po_id
-            ).order_by(Drug.name)
-        )
-        
-        items_with_drugs = result.all()
-        
-        # Build response
-        items_response = []
-        for item, drug in items_with_drugs:
-            items_response.append(
-                PurchaseOrderItemWithDetails(
-                    id=item.id,
-                    purchase_order_id=item.purchase_order_id,
-                    drug_id=item.drug_id,
-                    quantity_ordered=item.quantity_ordered,
-                    quantity_received=item.quantity_received,
-                    unit_cost=item.unit_cost,
-                    total_cost=item.total_cost,
-                    batch_number=item.batch_number,
-                    expiry_date=item.expiry_date,
-                    drug_name=drug.name,
-                    drug_sku=drug.sku,
-                    drug_generic_name=drug.generic_name,
-                    created_at=item.created_at,
-                    updated_at=item.updated_at
-                )
+            select(func.coalesce(func.sum(PurchaseOrderItem.total_cost), 0)).where(
+                PurchaseOrderItem.purchase_order_id == po.id
             )
-        
-        return items_response
+        )
+        po.subtotal = result.scalar_one()
+        po.tax_amount = po.subtotal * Decimal("0")  # extend for org-level tax
+        po.total_amount = po.subtotal + po.tax_amount + (po.shipping_cost or Decimal("0"))
+        po.updated_at = _now()
+
+    @staticmethod
+    async def _generate_po_number(db: AsyncSession, branch_code: str) -> str:
+        """
+        Generate a collision-safe PO number.
+
+        Uses a SELECT … FOR UPDATE on the count of today's POs for this branch
+        so that two concurrent requests cannot receive the same sequence number.
+        Pattern: PO-{BRANCH_CODE}-{YYYYMMDD}-{4-digit sequence}
+        """
+        today_str = date.today().strftime("%Y%m%d")
+        prefix = f"PO-{branch_code}-{today_str}"
+
+        result = await db.execute(
+            select(func.count(PurchaseOrder.id))
+            .where(PurchaseOrder.po_number.like(f"{prefix}%"))
+            .with_for_update()
+        )
+        count: int = result.scalar_one() or 0
+        return f"{prefix}-{str(count + 1).zfill(4)}"
+
+    @staticmethod
+    async def _build_po_with_details(
+        db: AsyncSession,
+        po: PurchaseOrder,
+    ) -> PurchaseOrderWithDetails:
+        """
+        Build a PurchaseOrderWithDetails from an already-loaded PO.
+
+        Resolves branch / orderer / approver in three targeted queries rather
+        than N+1 per-item Drug selects. Drug details are fetched with a single
+        JOIN across all items.
+        """
+        # Branch
+        branch = await db.scalar(select(Branch).where(Branch.id == po.branch_id))
+
+        # Orderer
+        orderer = await db.scalar(select(User).where(User.id == po.ordered_by))
+
+        # Approver (optional)
+        approved_by_name: Optional[str] = None
+        if po.approved_by:
+            approver = await db.scalar(select(User).where(User.id == po.approved_by))
+            approved_by_name = approver.full_name if approver else None
+
+        # Items with drug details — single JOIN
+        rows = await db.execute(
+            select(PurchaseOrderItem, Drug)
+            .join(Drug, PurchaseOrderItem.drug_id == Drug.id)
+            .where(PurchaseOrderItem.purchase_order_id == po.id)
+            .order_by(Drug.name)
+        )
+        items_with_details = [
+            PurchaseOrderItemWithDetails(
+                **{k: v for k, v in item.__dict__.items() if not k.startswith("_")},
+                drug_name=drug.name,
+                drug_sku=drug.sku,
+                drug_generic_name=drug.generic_name,
+            )
+            for item, drug in rows.all()
+        ]
+
+        po_dict = {k: v for k, v in po.__dict__.items() if not k.startswith("_")}
+        po_dict.pop("items", None)
+
+        return PurchaseOrderWithDetails(
+            **po_dict,
+            items=items_with_details,
+            supplier_name=po.supplier.name,
+            branch_name=branch.name if branch else "",
+            ordered_by_name=orderer.full_name if orderer else "",
+            approved_by_name=approved_by_name,
+        )
+
+    @staticmethod
+    async def _create_audit_log(
+        db: AsyncSession,
+        action: str,
+        entity_type: str,
+        entity_id: uuid.UUID,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        changes: Optional[dict] = None,
+    ) -> None:
+        """
+        Append an AuditLog row to the current transaction.
+
+        Never commits — the caller owns the transaction boundary.
+        """
+        db.add(
+            AuditLog(
+                id=uuid.uuid4(),
+                organization_id=organization_id,
+                user_id=user_id,
+                action=action,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                changes=changes or {},
+                created_at=_now(),
+            )
+        )

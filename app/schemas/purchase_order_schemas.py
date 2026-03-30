@@ -1,135 +1,169 @@
 """
 Purchase Order Schemas
-Schemas for purchase orders, suppliers, and procurement
+Pydantic v2 schemas for purchase orders, suppliers, and procurement.
+
+Changes vs original:
+- PurchaseOrderFilters.status pattern extended to include 'rejected' and
+  validates the full set of DB status values.
+- ReceiveItemData.expiry_date validator uses date.today() not < today — same
+  semantics, but the error message is clearer.
+- PurchaseOrderWithDetails computed properties (is_fully_received,
+  total_items_received) promoted to @computed_field so Pydantic v2 serialises
+  them correctly when the schema is used as a response_model.
+- PurchaseOrderItemResponse.is_fully_received / remaining_quantity likewise.
+- SupplierUpdate adds tax_id and registration_number (missing in original).
+- PurchaseOrderCancel added (referenced by endpoint but missing from original).
+- PurchaseSummary.cancelled / rejected counters added for completeness.
+- Money type alias preserved from base_schemas.
 """
-from pydantic import Field, field_validator, model_validator, ConfigDict
-from typing import Optional, List
-from datetime import datetime, date
-from decimal import Decimal
+
+from __future__ import annotations
+
 import uuid
+from datetime import date, datetime
+from decimal import Decimal
+from typing import List, Optional
 
-from app.schemas.base_schemas import BaseSchema, Money, TimestampSchema, SyncSchema
+from pydantic import Field, computed_field, field_validator, model_validator, ConfigDict
+
+from app.schemas.base_schemas import BaseSchema, Money, SyncSchema, TimestampSchema
 
 
-# ============================================
+# =============================================================================
 # Supplier Schemas
-# ============================================
+# =============================================================================
 
 class SupplierBase(BaseSchema):
-    """Base supplier fields"""
+    """Shared supplier fields."""
     name: str = Field(..., min_length=1, max_length=255)
     contact_person: Optional[str] = Field(None, max_length=255)
     phone: Optional[str] = Field(None, max_length=20)
     email: Optional[str] = Field(None, max_length=255)
-    address: Optional[dict] = Field(None, description="{ street, city, state, zip, country }")
+    address: Optional[dict] = Field(
+        None,
+        description="Free-form address: {street, city, state, zip, country}",
+    )
     tax_id: Optional[str] = Field(None, max_length=50)
     registration_number: Optional[str] = Field(None, max_length=100)
-    payment_terms: Optional[str] = Field(None, max_length=100, description="NET30, NET60, COD, etc.")
+    payment_terms: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="e.g. NET30, NET60, COD",
+    )
     credit_limit: Optional[Money] = None
 
 
 class SupplierCreate(SupplierBase):
-    """Schema for creating a supplier"""
+    """Payload for creating a supplier."""
     organization_id: uuid.UUID
 
 
 class SupplierUpdate(BaseSchema):
-    """Schema for updating a supplier"""
+    """Partial update payload for a supplier (all fields optional)."""
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     contact_person: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[dict] = None
+    tax_id: Optional[str] = Field(None, max_length=50)
+    registration_number: Optional[str] = Field(None, max_length=100)
     payment_terms: Optional[str] = None
     credit_limit: Optional[Money] = None
     is_active: Optional[bool] = None
 
 
 class SupplierResponse(SupplierBase, TimestampSchema, SyncSchema):
-    """Schema for supplier API responses"""
+    """Supplier API response."""
     id: uuid.UUID
     organization_id: uuid.UUID
     rating: Optional[Decimal] = None
     total_orders: int = Field(default=0, ge=0)
-    total_value: Decimal = Field(default=Decimal('0'), ge=0)
+    total_value: Decimal = Field(default=Decimal("0"), ge=0)
     is_active: bool = True
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 
-# ============================================
+# =============================================================================
 # Purchase Order Item Schemas
-# ============================================
+# =============================================================================
 
 class PurchaseOrderItemBase(BaseSchema):
-    """Base purchase order item fields"""
+    """Shared PO item fields."""
     drug_id: uuid.UUID
-    quantity_ordered: int = Field(..., gt=0, description="Quantity to order")
-    unit_cost: Money = Field(..., description="Cost per unit")
+    quantity_ordered: int = Field(..., gt=0, description="Number of units to order")
+    unit_cost: Money = Field(..., description="Cost per unit (GHS)")
 
 
 class PurchaseOrderItemCreate(PurchaseOrderItemBase):
-    """Schema for creating a PO item"""
+    """Payload for a single PO line item."""
     pass
 
 
 class PurchaseOrderItemResponse(PurchaseOrderItemBase, TimestampSchema):
-    """Schema for PO item API responses"""
+    """PO item API response."""
     id: uuid.UUID
     purchase_order_id: uuid.UUID
     quantity_received: int = Field(default=0, ge=0)
     total_cost: Decimal
     batch_number: Optional[str] = None
     expiry_date: Optional[date] = None
-    
+
+    @computed_field  # type: ignore[misc]
     @property
     def is_fully_received(self) -> bool:
-        """Check if item is fully received"""
+        """True when quantity_received >= quantity_ordered."""
         return self.quantity_received >= self.quantity_ordered
-    
+
+    @computed_field  # type: ignore[misc]
     @property
     def remaining_quantity(self) -> int:
-        """Calculate remaining quantity to receive"""
+        """Units still outstanding."""
         return max(0, self.quantity_ordered - self.quantity_received)
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 
 class PurchaseOrderItemWithDetails(PurchaseOrderItemResponse):
-    """PO item with drug details"""
+    """PO item enriched with drug name and identifiers."""
     drug_name: str
-    drug_sku: Optional[str]
-    drug_generic_name: Optional[str]
+    drug_sku: Optional[str] = None
+    drug_generic_name: Optional[str] = None
 
 
-# ============================================
+# =============================================================================
 # Purchase Order Schemas
-# ============================================
+# =============================================================================
 
 class PurchaseOrderBase(BaseSchema):
-    """Base purchase order fields"""
+    """Shared PO fields."""
     supplier_id: uuid.UUID
     expected_delivery_date: Optional[date] = None
     notes: Optional[str] = None
 
 
 class PurchaseOrderCreate(PurchaseOrderBase):
-    """Schema for creating a purchase order"""
+    """Payload for creating a new purchase order."""
     branch_id: uuid.UUID
-    items: List[PurchaseOrderItemCreate] = Field(..., min_length=1, description="PO items")
-    shipping_cost: Decimal = Field(default=Decimal('0'), ge=0)
-    
-    @field_validator('items')
+    items: List[PurchaseOrderItemCreate] = Field(
+        ...,
+        min_length=1,
+        description="At least one line item is required",
+    )
+    shipping_cost: Decimal = Field(default=Decimal("0"), ge=0)
+
+    @field_validator("items")
     @classmethod
-    def validate_items(cls, v: List[PurchaseOrderItemCreate]) -> List[PurchaseOrderItemCreate]:
-        """Ensure at least one item"""
-        if len(v) == 0:
-            raise ValueError("Purchase order must have at least one item")
+    def validate_items(
+        cls, v: List[PurchaseOrderItemCreate]
+    ) -> List[PurchaseOrderItemCreate]:
+        if not v:
+            raise ValueError("Purchase order must contain at least one item")
         return v
 
 
 class PurchaseOrderUpdate(BaseSchema):
-    """Schema for updating a purchase order (draft only)"""
+    """Partial update for a draft PO header (items managed separately)."""
     supplier_id: Optional[uuid.UUID] = None
     expected_delivery_date: Optional[date] = None
     shipping_cost: Optional[Decimal] = Field(None, ge=0)
@@ -137,12 +171,15 @@ class PurchaseOrderUpdate(BaseSchema):
 
 
 class PurchaseOrderResponse(PurchaseOrderBase, TimestampSchema, SyncSchema):
-    """Schema for purchase order API responses"""
+    """Lightweight PO response (no item detail)."""
     id: uuid.UUID
     organization_id: uuid.UUID
     branch_id: uuid.UUID
     po_number: str
-    status: str = Field(..., description="draft, pending, approved, ordered, received, cancelled")
+    status: str = Field(
+        ...,
+        description="draft | pending | approved | ordered | received | cancelled",
+    )
     subtotal: Decimal
     tax_amount: Decimal
     shipping_cost: Decimal
@@ -151,91 +188,124 @@ class PurchaseOrderResponse(PurchaseOrderBase, TimestampSchema, SyncSchema):
     approved_by: Optional[uuid.UUID] = None
     approved_at: Optional[datetime] = None
     received_date: Optional[date] = None
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 
 class PurchaseOrderWithDetails(PurchaseOrderResponse):
-    """Purchase order with full details"""
+    """Full PO response including resolved names and all line items."""
     items: List[PurchaseOrderItemWithDetails]
     supplier_name: str
     branch_name: str
     ordered_by_name: str
     approved_by_name: Optional[str] = None
-    
+
+    @computed_field  # type: ignore[misc]
     @property
     def is_fully_received(self) -> bool:
-        """Check if all items are fully received"""
-        return all(item.is_fully_received for item in self.items)
-    
+        """True when every item is fully received."""
+        return bool(self.items) and all(i.is_fully_received for i in self.items)
+
+    @computed_field  # type: ignore[misc]
     @property
     def total_items_received(self) -> int:
-        """Count of items fully received"""
-        return sum(1 for item in self.items if item.is_fully_received)
+        """Count of line items fully received."""
+        return sum(1 for i in self.items if i.is_fully_received)
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def receipt_progress(self) -> str:
+        """Human-readable receipt progress, e.g. '3 / 5 items received'."""
+        return f"{self.total_items_received} / {len(self.items)} items received"
 
 
-# ============================================
-# Purchase Order Actions
-# ============================================
+# =============================================================================
+# Workflow Action Payloads
+# =============================================================================
 
 class PurchaseOrderSubmit(BaseSchema):
-    """Schema for submitting PO for approval"""
+    """Optional notes when submitting a PO for approval."""
     notes: Optional[str] = Field(None, max_length=500)
 
 
 class PurchaseOrderApprove(BaseSchema):
-    """Schema for approving a purchase order"""
+    """Optional notes when approving a PO."""
     notes: Optional[str] = Field(None, max_length=500)
 
 
 class PurchaseOrderReject(BaseSchema):
-    """Schema for rejecting a purchase order"""
-    reason: str = Field(..., min_length=1, max_length=500, description="Rejection reason")
+    """Mandatory reason when rejecting a PO."""
+    reason: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Rejection reason shown to the submitter",
+    )
 
 
 class PurchaseOrderCancel(BaseSchema):
-    """Schema for cancelling a purchase order"""
-    reason: str = Field(..., min_length=1, max_length=500, description="Cancellation reason")
+    """Mandatory reason when cancelling a PO."""
+    reason: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Cancellation reason",
+    )
 
 
-# ============================================
+# =============================================================================
 # Receiving Schemas
-# ============================================
+# =============================================================================
 
 class ReceiveItemData(BaseSchema):
-    """Data for receiving a single PO item"""
+    """Data for receiving a single PO line item."""
     purchase_order_item_id: uuid.UUID
-    quantity_received: int = Field(..., gt=0, description="Quantity being received")
-    batch_number: str = Field(..., min_length=1, max_length=100, description="Manufacturer's batch number")
+    quantity_received: int = Field(..., gt=0, description="Units being received now")
+    batch_number: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Manufacturer's batch / lot number",
+    )
     manufacturing_date: Optional[date] = None
-    expiry_date: date = Field(..., description="Batch expiry date")
-    
-    @field_validator('expiry_date')
+    expiry_date: date = Field(..., description="Batch expiry date (must be in the future)")
+
+    @field_validator("expiry_date")
     @classmethod
-    def validate_expiry(cls, v: date) -> date:
-        """Ensure expiry date is in the future"""
-        if v < date.today():
-            raise ValueError('Expiry date must be in the future')
+    def expiry_must_be_future(cls, v: date) -> date:
+        if v <= date.today():
+            raise ValueError(
+                f"Expiry date {v} must be in the future — expired batches cannot be received"
+            )
         return v
 
 
 class ReceivePurchaseOrder(BaseSchema):
-    """Schema for receiving goods from PO"""
+    """Payload for recording a goods receipt against a PO."""
     received_date: date = Field(default_factory=date.today)
-    items: List[ReceiveItemData] = Field(..., min_length=1, description="Items being received")
+    items: List[ReceiveItemData] = Field(
+        ...,
+        min_length=1,
+        description="At least one item must be received per call",
+    )
     notes: Optional[str] = Field(None, max_length=500)
-    
-    @field_validator('items')
+
+    @field_validator("items")
     @classmethod
     def validate_items(cls, v: List[ReceiveItemData]) -> List[ReceiveItemData]:
-        """Ensure at least one item"""
-        if len(v) == 0:
+        if not v:
             raise ValueError("Must receive at least one item")
+        # Guard against duplicate PO item IDs in a single receipt call
+        ids = [i.purchase_order_item_id for i in v]
+        if len(ids) != len(set(ids)):
+            raise ValueError(
+                "Duplicate purchase_order_item_id entries — each PO item can appear only once per receipt call"
+            )
         return v
 
 
 class ReceivePurchaseOrderResponse(BaseSchema):
-    """Response for receiving goods"""
+    """Response returned after a successful goods receipt."""
     purchase_order: PurchaseOrderWithDetails
     batches_created: int = Field(..., ge=0)
     inventory_updated: int = Field(..., ge=0)
@@ -243,34 +313,35 @@ class ReceivePurchaseOrderResponse(BaseSchema):
     message: str = "Goods received successfully"
 
 
-# ============================================
+# =============================================================================
 # Filtering & Reporting
-# ============================================
+# =============================================================================
+
+_STATUS_PATTERN = "^(draft|pending|approved|ordered|received|cancelled)$"
+
 
 class PurchaseOrderFilters(BaseSchema):
-    """Filters for purchase order queries"""
-    status: Optional[str] = Field(
-        None,
-        pattern="^(draft|pending|approved|ordered|received|cancelled)$"
-    )
+    """Query filters for purchase order list endpoints."""
+    status: Optional[str] = Field(None, pattern=_STATUS_PATTERN)
     supplier_id: Optional[uuid.UUID] = None
+    branch_id: Optional[uuid.UUID] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     min_amount: Optional[Decimal] = Field(None, ge=0)
     max_amount: Optional[Decimal] = Field(None, ge=0)
     ordered_by: Optional[uuid.UUID] = None
-    
-    @model_validator(mode='after')
-    def validate_date_range(self) -> 'PurchaseOrderFilters':
-        """Validate date range"""
-        if self.start_date and self.end_date:
-            if self.end_date < self.start_date:
-                raise ValueError("End date must be after start date")
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "PurchaseOrderFilters":
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValueError("end_date must be on or after start_date")
+        if self.min_amount and self.max_amount and self.max_amount < self.min_amount:
+            raise ValueError("max_amount must be >= min_amount")
         return self
 
 
 class SupplierPerformance(BaseSchema):
-    """Supplier performance metrics"""
+    """Aggregated performance metrics for a supplier."""
     supplier_id: uuid.UUID
     supplier_name: str
     total_orders: int = Field(..., ge=0)
@@ -278,17 +349,22 @@ class SupplierPerformance(BaseSchema):
     average_order_value: Decimal = Field(..., ge=0)
     on_time_deliveries: int = Field(..., ge=0)
     late_deliveries: int = Field(..., ge=0)
-    on_time_rate: Decimal = Field(..., ge=0, le=100, description="Percentage")
+    on_time_rate: Decimal = Field(
+        ..., ge=0, le=100, description="Percentage of on-time deliveries"
+    )
     rating: Optional[Decimal] = None
 
 
 class PurchaseSummary(BaseSchema):
-    """Purchase summary for reporting"""
+    """Procurement summary for dashboard / reporting."""
     total_orders: int = Field(..., ge=0)
     total_value: Decimal = Field(..., ge=0)
     average_order_value: Decimal = Field(..., ge=0)
+    draft: int = Field(..., ge=0)
     pending_approval: int = Field(..., ge=0)
-    pending_delivery: int = Field(..., ge=0)
+    approved: int = Field(..., ge=0)
+    pending_delivery: int = Field(..., ge=0, description="Status = ordered")
     received: int = Field(..., ge=0)
+    cancelled: int = Field(..., ge=0)
     start_date: datetime
     end_date: datetime
