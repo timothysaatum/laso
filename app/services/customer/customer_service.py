@@ -20,8 +20,7 @@ from typing import Optional, List, Tuple
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, and_, asc, desc, update
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select, func, or_, asc, desc
 
 from fastapi import HTTPException, status
 
@@ -31,11 +30,9 @@ from app.models.sales.sales_model import Sale
 from app.schemas.customer_schemas import (
     CustomerCreate,
     CustomerUpdate,
-    CustomerResponse,
     CustomerWithDetails,
     CustomerQuickLookup,
     CustomerSearchResult,
-    CustomerListResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -734,13 +731,17 @@ class CustomerService:
                 preferred_contract_discount = float(contract.discount_percentage)
 
         # ── Purchase statistics (aggregated, no individual row loading) ────────
+        # Note: coalesce uses 0.0 (float) not 0 (int) to avoid Decimal/int
+        # type mismatch in async SQLAlchemy. organization_id filter added for
+        # safety to prevent cross-org data leakage.
         stats_result = await db.execute(
             select(
                 func.count(Sale.id).label("total_purchases"),
-                func.coalesce(func.sum(Sale.total_amount), 0).label("total_spent"),
+                func.coalesce(func.sum(Sale.total_amount), 0.0).label("total_spent"),
                 func.max(Sale.created_at).label("last_purchase_date"),
             ).where(
                 Sale.customer_id == customer.id,
+                Sale.organization_id == customer.organization_id,
                 Sale.status.in_(["completed", "refunded"]),
             )
         )

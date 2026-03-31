@@ -241,6 +241,10 @@ class CustomerResponse(CustomerBase, TimestampSchema, SyncSchema):
     # Loyalty program
     loyalty_points: int = Field(default=0, ge=0)
     loyalty_tier: str = Field(default='bronze')
+
+    # Denormalized purchase counters (kept in sync by SalesService)
+    total_orders: int = Field(default=0, ge=0)
+    total_value: float = Field(default=0.0, ge=0)
     
     # Status
     is_active: bool = Field(default=True)
@@ -273,9 +277,9 @@ class CustomerWithDetails(CustomerResponse):
         description="Discount percentage from preferred contract"
     )
     
-    # Customer statistics
-    total_purchases: int = Field(default=0, ge=0)
-    total_spent: float = Field(default=0.0, ge=0)
+    # Customer statistics — aliases map to denormalized model columns
+    total_purchases: int = Field(default=0, ge=0, validation_alias='total_orders')
+    total_spent: float = Field(default=0.0, ge=0, validation_alias='total_value')
     last_purchase_date: Optional[datetime] = None
     
     # Computed properties

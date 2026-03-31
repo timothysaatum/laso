@@ -733,12 +733,19 @@ class SalesService:
 
             # ------------------------------------------------------------------
             # 18. Loyalty points + tier recalculation
+            #     Also increment denormalized purchase counters so
+            #     CustomerService._build_with_details always has fresh data
+            #     even if the live Sale aggregate query has a type issue.
             # ------------------------------------------------------------------
             points_earned = 0
             if customer:
                 loyalty_cfg   = organization.settings.get("loyalty", {})
                 points_rate   = _d(loyalty_cfg.get("points_per_unit", "1.0"))
                 points_earned = int(total_amount * points_rate)
+
+                # Increment denormalized purchase counters
+                customer.total_orders = (customer.total_orders or 0) + 1
+                customer.total_value  = float(_r2(_d(customer.total_value or 0) + total_amount))
 
                 previous_tier         = customer.loyalty_tier
                 customer.loyalty_points += points_earned

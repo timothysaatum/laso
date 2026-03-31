@@ -97,7 +97,21 @@ class Customer(Base, TimestampMixin, SyncTrackingMixin, SoftDeleteMixin):
         default='bronze',
         comment="bronze, silver, gold, platinum"
     )
-    
+
+    # Denormalized purchase counters — kept in sync by SalesService
+    total_orders: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+        comment="Total number of completed sales for this customer"
+    )
+
+    total_value: Mapped[float] = mapped_column(
+        default=0.0,
+        nullable=False,
+        comment="Cumulative spend across all completed sales (GHS)"
+    )
+
     # Preferences
     preferred_contact_method: Mapped[str] = mapped_column(
         String(20),
