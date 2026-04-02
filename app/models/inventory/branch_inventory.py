@@ -199,7 +199,7 @@ class StockAdjustment(Base, TimestampMixin):
         String(50),
         nullable=False,
         index=True,
-        comment="damage, expired, theft, return, correction, transfer"
+        comment="damage, expired, theft, return, correction, transfer, purchase_receipt"
     )
     
     # Quantity change (negative for reductions)
@@ -229,7 +229,7 @@ class StockAdjustment(Base, TimestampMixin):
     
     __table_args__ = (
         CheckConstraint(
-            "adjustment_type IN ('damage', 'expired', 'theft', 'return', 'correction', 'transfer')",
+            "adjustment_type IN ('damage', 'expired', 'theft', 'return', 'correction', 'transfer', 'purchase_receipt')",
             name='check_adjustment_type'
         ),
         CheckConstraint("new_quantity >= 0", name='check_new_quantity'),

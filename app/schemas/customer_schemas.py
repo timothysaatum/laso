@@ -251,7 +251,7 @@ class CustomerResponse(CustomerBase, TimestampSchema, SyncSchema):
     deleted_at: Optional[datetime] = None
     
     # Security: Exclude sensitive health information from API responses
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class CustomerWithDetails(CustomerResponse):
@@ -277,9 +277,10 @@ class CustomerWithDetails(CustomerResponse):
         description="Discount percentage from preferred contract"
     )
     
-    # Customer statistics — aliases map to denormalized model columns
-    total_purchases: int = Field(default=0, ge=0, validation_alias='total_orders')
-    total_spent: float = Field(default=0.0, ge=0, validation_alias='total_value')
+    # Purchase statistics — populated by CustomerService._build_with_details
+    # via a live aggregate query on Sale. NOT aliased from the ORM model.
+    total_purchases: int = Field(default=0, ge=0)
+    total_spent: float = Field(default=0.0, ge=0)
     last_purchase_date: Optional[datetime] = None
     
     # Computed properties
@@ -517,7 +518,7 @@ class CustomerQuickLookup(BaseSchema):
     preferred_contract_name: Optional[str]
     eligible_for_senior_discount: bool
     
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class CustomerSearchResult(BaseSchema):

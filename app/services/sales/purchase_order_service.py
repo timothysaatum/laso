@@ -15,7 +15,9 @@ Key design decisions:
   describe; they are never committed separately.
 - mutable default argument `changes: dict = {}` is fixed to `changes=None`.
 - debug print() in create_purchase_order removed.
-- StockAdjustment type 'return' replaced with the correct value 'received'.
+- StockAdjustment type 'return' replaced with 'purchase_receipt' — the correct
+  value for a goods receipt. 'received' (a previous incorrect attempt) is not
+  in the check_adjustment_type constraint.
 - receive_goods: fully-received items are now silently skipped with a warning
   field rather than raising, matching real warehouse behaviour.
 - Rejected POs use status 'rejected', not 'cancelled', matching the schema
@@ -666,7 +668,7 @@ class PurchaseOrderService:
                         id=uuid.uuid4(),
                         branch_id=po.branch_id,
                         drug_id=po_item.drug_id,
-                        adjustment_type="received",  # correct enum value
+                        adjustment_type="purchase_receipt",
                         quantity_change=item_receive.quantity_received,
                         previous_quantity=previous_quantity,
                         new_quantity=previous_quantity + item_receive.quantity_received,

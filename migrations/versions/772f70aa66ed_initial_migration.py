@@ -1,18 +1,18 @@
-"""create tables
+"""initial migration
 
-Revision ID: 6a07a5e6d141
+Revision ID: 772f70aa66ed
 Revises: 
-Create Date: 2026-03-22 22:04:23.384247
+Create Date: 2026-04-01 08:41:23.322200
 
 """
 from typing import Sequence, Union
-
+import app
 from alembic import op
 import sqlalchemy as sa
-import app
+
 
 # revision identifiers, used by Alembic.
-revision: str = '6a07a5e6d141'
+revision: str = '772f70aa66ed'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -597,6 +597,8 @@ def upgrade() -> None:
     sa.Column('medical_data_encrypted', sa.Boolean(), nullable=False, comment='Whether PHI is encrypted'),
     sa.Column('loyalty_points', sa.Integer(), nullable=False),
     sa.Column('loyalty_tier', sa.String(length=50), nullable=False, comment='bronze, silver, gold, platinum'),
+    sa.Column('total_orders', sa.Integer(), nullable=False, comment='Total number of completed sales for this customer'),
+    sa.Column('total_value', sa.Float(), nullable=False, comment='Cumulative spend across all completed sales (GHS)'),
     sa.Column('preferred_contact_method', sa.String(length=20), nullable=False, comment='email, phone, sms'),
     sa.Column('marketing_consent', sa.Boolean(), nullable=False),
     sa.Column('is_active', sa.Boolean(), nullable=False),

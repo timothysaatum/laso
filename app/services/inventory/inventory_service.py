@@ -188,6 +188,9 @@ class InventoryService:
                     drug_name=drug.name,
                     drug_sku=drug.sku,
                     drug_unit_price=Decimal(str(drug.unit_price)),
+                    # Included so the frontend can render accurate per-drug stock
+                    # status badges without a separate drugApi.getById() call.
+                    drug_reorder_level=drug.reorder_level,
                     branch_name=branch.name,
                     branch_code=branch.code,
                 )

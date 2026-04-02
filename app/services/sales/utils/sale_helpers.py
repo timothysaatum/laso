@@ -199,7 +199,8 @@ async def build_sale_with_details(
     sale_dict = {
         k: v
         for k, v in sale.__dict__.items()
-        if not k.startswith("_") and k != "items"  # exclude ORM 'items' relationship to avoid duplicate kwarg
+        if not k.startswith("_")
+        and k not in ("items", "items_count")  # exclude ORM relationship + computed_field name
     }
     return SaleWithDetails(
         **sale_dict,

@@ -9,7 +9,7 @@ Features:
 - Audit trail
 - Security controls
 """
-from pydantic import Field, field_validator, model_validator, ConfigDict
+from pydantic import Field, field_validator, model_validator, ConfigDict, computed_field
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
 from decimal import Decimal
@@ -547,7 +547,14 @@ class SaleResponse(SaleBase, TimestampSchema, SyncSchema):
     def net_amount(self) -> Decimal:
         """Amount after all deductions"""
         return self.total_amount - (self.insurance_covered_amount or Decimal('0.00'))
-    
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def items_count(self) -> int:
+        """Always 0 for list responses — items are not loaded by the list endpoint.
+        Overridden by SaleWithDetails which has the actual items list."""
+        return 0
+
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
@@ -557,20 +564,26 @@ class SaleWithDetails(SaleResponse):
         default_factory=list,
         description="Detailed line items"
     )
-    
+
     # Customer details
     customer_full_name: Optional[str] = None
     customer_phone: Optional[str] = None
     customer_email: Optional[str] = None
     customer_loyalty_tier: Optional[str] = None
-    
+
     # Branch details
     branch_name: str
     branch_address: Optional[Dict[str, Any]] = None
-    
+
     # Organization details
     organization_name: str
     organization_tax_id: Optional[str] = None
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def items_count(self) -> int:
+        """Derived from items list — never stored, never triggers validate_assignment."""
+        return len(self.items)
 
 
 class ProcessSaleResponse(BaseSchema):

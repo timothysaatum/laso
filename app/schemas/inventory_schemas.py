@@ -59,6 +59,9 @@ class BranchInventoryWithDetails(BranchInventoryResponse):
     drug_name: str
     drug_sku: Optional[str]
     drug_unit_price: Decimal
+    # Joined from Drug.reorder_level so the frontend can render per-drug stock
+    # status badges without issuing a separate GET /drugs/{id} call per row.
+    drug_reorder_level: int
     branch_name: str
     branch_code: str
 
