@@ -20,6 +20,7 @@ from .endpoints.stats import router as stats_router
 from .endpoints.price_contract_endpoints import router as price_contract_router
 from .endpoints.sync_endpoints import router as sync_router
 from .endpoints.customer_endpoints import router as customer_router
+from .endpoints.users import router as user_router
 
 
 router.include_router(auth_router, tags=["Authentication"])
@@ -34,5 +35,6 @@ router.include_router(stats_router, tags=["Statistics"])
 router.include_router(sync_router, tags=["Offline Sync"])
 router.include_router(price_contract_router, tags=["Price Contracts"])
 router.include_router(customer_router, tags=["Customers"])
+router.include_router(user_router, tags=["User Management"])
 
 __all__ = ["router"]

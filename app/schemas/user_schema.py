@@ -112,7 +112,7 @@ class UserResponse(UserBase, TimestampSchema, SyncSchema):
     last_login: Optional[datetime] = None
     two_factor_enabled: bool
     deleted_at: Optional[datetime] = None
-    
+    account_locked_until: Optional[datetime] = None
     # Security: Never expose password hash or 2FA secret
     model_config = ConfigDict(
         from_attributes=True
