@@ -1,18 +1,18 @@
-"""initial migration
+"""initial tables
 
-Revision ID: 772f70aa66ed
+Revision ID: 4a8c7a6b5ba3
 Revises: 
-Create Date: 2026-04-01 08:41:23.322200
+Create Date: 2026-04-03 06:14:28.863581
 
 """
 from typing import Sequence, Union
-import app
+
 from alembic import op
 import sqlalchemy as sa
-
+import app
 
 # revision identifiers, used by Alembic.
-revision: str = '772f70aa66ed'
+revision: str = '4a8c7a6b5ba3'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -735,7 +735,7 @@ def upgrade() -> None:
     sa.Column('id', app.models.db_types.UUID(length=36), nullable=False),
     sa.Column('branch_id', app.models.db_types.UUID(length=36), nullable=False),
     sa.Column('drug_id', app.models.db_types.UUID(length=36), nullable=False),
-    sa.Column('adjustment_type', sa.String(length=50), nullable=False, comment='damage, expired, theft, return, correction, transfer'),
+    sa.Column('adjustment_type', sa.String(length=50), nullable=False, comment='damage, expired, theft, return, correction, transfer, purchase_receipt'),
     sa.Column('quantity_change', sa.Integer(), nullable=False, comment='Positive for additions, negative for reductions'),
     sa.Column('previous_quantity', sa.Integer(), nullable=False),
     sa.Column('new_quantity', sa.Integer(), nullable=False),
@@ -744,7 +744,7 @@ def upgrade() -> None:
     sa.Column('transfer_to_branch_id', app.models.db_types.UUID(length=36), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
-    sa.CheckConstraint("adjustment_type IN ('damage', 'expired', 'theft', 'return', 'correction', 'transfer')", name='check_adjustment_type'),
+    sa.CheckConstraint("adjustment_type IN ('damage', 'expired', 'theft', 'return', 'correction', 'transfer', 'purchase_receipt')", name='check_adjustment_type'),
     sa.CheckConstraint('new_quantity >= 0', name='check_new_quantity'),
     sa.ForeignKeyConstraint(['adjusted_by'], ['users.id'], ondelete='RESTRICT'),
     sa.ForeignKeyConstraint(['branch_id'], ['branches.id'], ondelete='CASCADE'),

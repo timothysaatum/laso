@@ -24,7 +24,11 @@ class BranchService:
         created_by_user_id: uuid.UUID
     ) -> Branch:
         """
-        Create a new branch with validation
+        Create a new branch with validation.
+        
+        After successful creation, all super_admin and admin users in the
+        organisation are automatically assigned to the new branch so they
+        retain full visibility without a manual step.
         
         Args:
             db: Database session
@@ -93,11 +97,8 @@ class BranchService:
         # Properly serialize nested Pydantic models to dicts for JSONB
         # Address field
         if 'address' in branch_dict and branch_dict['address'] is not None:
-            # If it's already a dict (from model_dump), keep it
-            # If it's a Pydantic model, convert it
             if hasattr(branch_dict['address'], 'model_dump'):
                 branch_dict['address'] = branch_dict['address'].model_dump()
-            # Ensure it's a plain dict
             branch_dict['address'] = dict(branch_dict['address'])
         
         # Operating hours field - more complex nested structure
@@ -105,14 +106,11 @@ class BranchService:
             operating_hours_dict = {}
             operating_hours = branch_dict['operating_hours']
             
-            # If it's a Pydantic model, convert to dict first
             if hasattr(operating_hours, 'model_dump'):
                 operating_hours = operating_hours.model_dump()
             
-            # Now process each day
             for day, hours in operating_hours.items():
                 if hours is not None:
-                    # If hours is still a Pydantic model, convert it
                     if hasattr(hours, 'model_dump'):
                         operating_hours_dict[day] = hours.model_dump()
                     else:
@@ -135,6 +133,30 @@ class BranchService:
             )
             
             db.add(branch)
+            await db.flush()  # flush so branch.id is available before we reference it below
+
+            # ── Auto-assign new branch to all super_admin and admin users ──────
+            # These roles have org-wide scope (super_admin has '*', admin has
+            # manage_branches) so they must always see every branch.
+            # managers/pharmacists/cashiers are assigned to branches explicitly.
+            result = await db.execute(
+                select(User).where(
+                    User.organization_id == branch_data.organization_id,
+                    User.role.in_(['super_admin', 'admin']),
+                    User.is_active == True,
+                    User.is_deleted == False,
+                )
+            )
+            admin_users = result.scalars().all()
+
+            for admin_user in admin_users:
+                current = list(admin_user.assigned_branches or [])
+                if branch.id not in current:
+                    # Reassign the whole list — SQLAlchemy ARRAY mutation
+                    # requires a new list object to detect the change.
+                    admin_user.assigned_branches = current + [branch.id]
+                    admin_user.updated_at = datetime.now(timezone.utc)
+
             await db.commit()
             await db.refresh(branch)
             
@@ -142,7 +164,6 @@ class BranchService:
             
         except Exception as e:
             await db.rollback()
-            # Log the actual error for debugging
             import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Error creating branch: {str(e)}", exc_info=True)
@@ -199,7 +220,6 @@ class BranchService:
             Branch.is_deleted == False
         )
         
-        # Apply filters
         if is_active is not None:
             query = query.where(Branch.is_active == is_active)
         
@@ -236,7 +256,6 @@ class BranchService:
         updated_by_user_id: uuid.UUID
     ) -> Branch:
         """Update branch with validation"""
-        # Get existing branch
         branch = await BranchService.get_branch_by_id(db, branch_id, organization_id)
         if not branch:
             raise HTTPException(
@@ -244,10 +263,8 @@ class BranchService:
                 detail="Branch not found"
             )
         
-        # Get update data, excluding unset fields
         update_data = branch_data.model_dump(exclude_unset=True)
         
-        # Validate code uniqueness if being changed
         if 'code' in update_data and update_data['code'] != branch.code:
             result = await db.execute(
                 select(Branch).where(
@@ -264,7 +281,6 @@ class BranchService:
                     detail=f"Branch with code '{update_data['code']}' already exists"
                 )
         
-        # Validate manager if being changed
         if 'manager_id' in update_data and update_data['manager_id']:
             result = await db.execute(
                 select(User).where(
@@ -286,7 +302,6 @@ class BranchService:
                     detail=f"User with role '{manager.role}' cannot be a branch manager"
                 )
         
-        # Properly serialize nested fields for JSONB
         if 'address' in update_data and update_data['address'] is not None:
             if hasattr(update_data['address'], 'model_dump'):
                 update_data['address'] = update_data['address'].model_dump()
@@ -310,7 +325,6 @@ class BranchService:
             
             update_data['operating_hours'] = operating_hours_dict
         
-        # Update fields
         for key, value in update_data.items():
             setattr(branch, key, value)
         
@@ -347,7 +361,6 @@ class BranchService:
                 detail="Branch not found"
             )
         
-        # Check for existing inventory
         from app.models.inventory.branch_inventory import BranchInventory
         result = await db.execute(
             select(func.count(BranchInventory.id)).where(
@@ -369,7 +382,6 @@ class BranchService:
         
         await db.commit()
 
-
     @staticmethod
     async def assign_user_to_branches(
         db: AsyncSession,
@@ -378,7 +390,6 @@ class BranchService:
         organization_id: uuid.UUID
     ) -> User:
         """Assign user to multiple branches"""
-        # Get user
         result = await db.execute(
             select(User).where(
                 User.id == user_id,
@@ -393,7 +404,6 @@ class BranchService:
                 detail="User not found"
             )
         
-        # Verify all branches exist
         result = await db.execute(
             select(Branch).where(
                 Branch.id.in_(branch_ids),
@@ -408,7 +418,6 @@ class BranchService:
                 detail="One or more branches not found"
             )
         
-        # Update user's assigned branches
         user.assigned_branches = branch_ids
         user.updated_at = datetime.now(timezone.utc)
         
@@ -431,8 +440,6 @@ class BranchService:
                 detail="Branch not found"
             )
         
-        # Get statistics (implement based on your models)
-        # This is a placeholder - adjust based on your actual models
         stats = {
             'branch': branch,
             'total_inventory_items': 0,
