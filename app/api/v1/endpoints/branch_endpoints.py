@@ -192,15 +192,7 @@ async def get_branch(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Branch not found"
         )
-    
-    # Check if user has access (unless admin/super_admin)
-    if current_user.role not in ['admin', 'super_admin']:
-        if branch_id not in current_user.assigned_branches:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have access to this branch"
-            )
-    
+     
     return branch
 
 
